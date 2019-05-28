@@ -11,6 +11,7 @@
 #include "crl_ov10635_configuration.h"
 #include "crl_ar0231at_configuration.h"
 #include "crl_ov495_configuration.h"
+#include "crl_ov2775_configuration.h"
 
 static const struct crlmodule_sensors supported_sensors[] = {
 	{ "ADV7481 CVBS", "adv7481_cvbs", &adv7481_cvbs_crl_configuration },
@@ -23,6 +24,7 @@ static const struct crlmodule_sensors supported_sensors[] = {
 	{ "OV10635", "ov10635", &ov10635_crl_configuration },
 	{ "AR0231AT", "ar0231at", &ar0231at_crl_configuration },
 	{ "OV495", "ov495", &ov495_crl_configuration },
+	{ "OV2775", "ov2775", &ov2775_crl_configuration },
 };
 
 /*

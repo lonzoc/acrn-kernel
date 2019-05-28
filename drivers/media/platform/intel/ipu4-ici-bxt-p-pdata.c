@@ -453,8 +453,36 @@ static struct crlmodule_lite_platform_data ov495_pdata = {
 };
 #endif
 
+#ifdef CONFIG_INTEL_IPU4_OV2775
+#define OV2775_LANES	2
+#define OV2775_I2C_PHY_ADDR	0x6c    // ref to ov2775 datasheet <A.2 device control registers>
+#define OV2775A_I2C_ADDRESS	0x40
+#define OV2775B_I2C_ADDRESS	0x41
+#define OV2775C_I2C_ADDRESS	0x42
+#define OV2775D_I2C_ADDRESS	0x43
+
+#define OV2775A_SER_ADDRESS	0x58
+#define OV2775B_SER_ADDRESS	0x59
+#define OV2775C_SER_ADDRESS	0x5a
+#define OV2775D_SER_ADDRESS	0x5b
+
+static struct crlmodule_lite_platform_data ov2775_pdata = {
+	.lanes = OV2775_LANES,
+	.ext_clk = 24000000,
+	.op_sys_clock = (uint64_t[]){ 87750000 },
+	.module_name = "OV2775",
+	.id_string = "0x27 0x70",
+	/*
+	 * TI960 has 4 gpio pins, for PWDN, FSIN, and etc.
+	 * it depends connection between serializer and sensor,
+	 * please specify xshutdown, fsin as needed.
+	 */
+	.fsin = 2, /* gpio 2 used for FSIN */
+};
+#endif
+
 #if IS_ENABLED(CONFIG_VIDEO_TI960_ICI)
-#define TI960_I2C_ADAPTER	2
+#define TI960_I2C_ADAPTER	0 //ref 'ls -l /sys/bus/i2c/devices & 557555-apl-eds-vol1-rev2p4.pdf :: <2.1 PCI Device ID>'
 #define TI960_I2C_ADAPTER_2	4
 #define	TI960_LANES	4
 
@@ -520,6 +548,56 @@ static struct ti960_subdev_info ti960_subdevs[] = {
 	},
 
 #endif
+#ifdef CONFIG_INTEL_IPU4_OV2775
+	{
+		.board_info = {
+			.type = CRLMODULE_LITE_NAME,
+			.addr = OV2775A_I2C_ADDRESS,
+			.platform_data = &ov2775_pdata,
+		},
+		.i2c_adapter_id = TI960_I2C_ADAPTER,
+		.rx_port = 0,
+		.phy_i2c_addr = OV2775_I2C_PHY_ADDR,
+		.ser_alias = OV2775A_SER_ADDRESS,
+		.suffix = 'a',
+	},
+	{
+		.board_info = {
+			.type = CRLMODULE_LITE_NAME,
+			.addr = OV2775B_I2C_ADDRESS,
+			.platform_data = &ov2775_pdata,
+		},
+		.i2c_adapter_id = TI960_I2C_ADAPTER,
+		.rx_port = 1,
+		.phy_i2c_addr = OV2775_I2C_PHY_ADDR,
+		.ser_alias = OV2775B_SER_ADDRESS,
+		.suffix = 'b',
+	},
+	{
+		.board_info = {
+			.type = CRLMODULE_LITE_NAME,
+			.addr = OV2775C_I2C_ADDRESS,
+			.platform_data = &ov2775_pdata,
+		},
+		.i2c_adapter_id = TI960_I2C_ADAPTER,
+		.rx_port = 2,
+		.phy_i2c_addr = OV2775_I2C_PHY_ADDR,
+		.ser_alias = OV2775C_SER_ADDRESS,
+		.suffix = 'c',
+	},
+	{
+		.board_info = {
+			.type = CRLMODULE_LITE_NAME,
+			.addr = OV2775D_I2C_ADDRESS,
+			.platform_data = &ov2775_pdata,
+		},
+		.i2c_adapter_id = TI960_I2C_ADAPTER,
+		.rx_port = 3,
+		.phy_i2c_addr = OV2775_I2C_PHY_ADDR,
+		.ser_alias = OV2775D_SER_ADDRESS,
+		.suffix = 'd',
+	},
+#endif
 };
 
 static struct ti960_subdev_info ti960_subdevs_2[] = {
@@ -578,7 +656,7 @@ static struct ti960_subdev_info ti960_subdevs_2[] = {
 static struct ti960_pdata ti960_pdata = {
 	.subdev_info = ti960_subdevs,
 	.subdev_num = ARRAY_SIZE(ti960_subdevs),
-	.reset_gpio = GPIO_BASE + 62,
+	.reset_gpio = 434 + 15,		// 434 is from cat /sys/kernel/debug/gpio, 15 is from pinctrl-broxton.c :: apl_north_pins
 	.suffix = 'a',
 };
 
@@ -649,7 +727,7 @@ static struct ipu_isys_subdev_pdata pdata = {
 #endif
 #if IS_ENABLED(CONFIG_VIDEO_TI960_ICI)
 		&ti960_sd,
-		&ti960_sd_2,
+//		&ti960_sd_2,
 #endif
 		NULL,
 	},

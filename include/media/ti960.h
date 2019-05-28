@@ -12,7 +12,7 @@
 
 #define TI960_NAME "ti960"
 
-#define TI960_I2C_ADDRESS	0x38
+#define TI960_I2C_ADDRESS	0x30
 
 #define PIXEL_ORDER_GRBG	0
 #define PIXEL_ORDER_RGGB	1

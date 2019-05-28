@@ -61,12 +61,14 @@ struct ti960 {
 	//struct v4l2_ctrl *test_pattern;
 };
 
-/*
- * V4L2 uses v4l2_subdev_route struct to calculate
- * vc value to program CSI_VC_MAP register.
- * Implement something similar to v4l2_subdev_route
- * and create a vc_map table.
- */
+/* Useful macros */
+#define to_ti960(_sd) container_of(_sd, struct ti960, sd)
+#define to_ici_ext_subdev(_node) \
+	container_of(_node, struct ici_ext_subdev, node)
+#define TI960_SRC_PAD 1
+
+
+/* Rx port -> vc id map */
 struct ti960_vc_map {
 	u32 rx_port;
 	u32 sink_stream;
@@ -80,44 +82,15 @@ static struct ti960_vc_map vc_map[] = {
 	{3, 0, 3},
 };
 
-static int init_ext_sd(struct i2c_client *client,
-	struct ti960_subdev *sd,
-	int idx);
-static int ti960_find_subdev_index(struct ti960 *va, struct ici_ext_subdev *sd);
-static int create_link(struct ici_isys_node *src_node, u16 srcpad,
-	struct ici_isys_node *sink_node, u16 sinkpad, u32 flag);
-static int ti960_get_param(struct ici_ext_sd_param *param);
-static int ti960_get_menu_item(struct ici_ext_sd_param *param, u32 idx);
-static int ti960_set_param(struct ici_ext_sd_param *param);
-static int ti960_set_power(struct ici_isys_node *node, int on);
-static int ti960_set_stream(struct ici_isys_node *node, void *ip, int enable);
-static int ti960_enum_mbus_code(struct ici_isys_node *node,
-	struct ici_pad_supported_format_desc *psfd);
-
-#define to_ti960(_sd) container_of(_sd, struct ti960, sd)
-#define to_ici_ext_subdev(_node) \
-	container_of(_node, struct ici_ext_subdev, node)
-#define TI960_SRC_PAD 1
-
-static const s64 ti960_op_sys_clock[] =  {400000000, 800000000};
+/* ti960 csi port speed */
 static const u8 ti960_op_sys_clock_reg_val[] = {
 	TI960_MIPI_800MBPS,
 	TI960_MIPI_1600MBPS
 };
 
 /*
- * Order matters.
- *
- * 1. Bits-per-pixel, descending.
- * 2. Bits-per-pixel compressed, descending.
- * 3. Pixel order, same as in pixel_order_str. Formats for all four pixel
- *    orders must be defined.
+ * Common function for reg operate
  */
-static const struct ti960_csi_data_format va_csi_data_formats[] = {
-	{ ICI_FORMAT_YUYV, 16, 16, PIXEL_ORDER_GBRG, 0x1e },
-	{ ICI_FORMAT_UYVY, 16, 16, PIXEL_ORDER_GBRG, 0x1e },
-};
-
 static struct regmap_config ti960_reg_config8 = {
 	.reg_bits = 8,
 	.val_bits = 8,
@@ -292,6 +265,275 @@ static int ti960_map_ser_alias_addr(struct ti960 *va, unsigned short rx_port,
 	return regmap_write(va->regmap8, TI960_SER_ALIAS_ID, ser_alias);
 }
 
+
+/*
+ * Common functions to detect sensor id.
+ */
+struct slave_register_devid {
+	u16 reg;
+	u8 val_expected;
+};
+
+static const struct slave_register_devid ov2775_devid[] = {
+	{0x300A, 0x27},
+	{0x300B, 0x70},
+};
+
+/* read sensor id reg of 16 bit addr, and 8 bit val */
+static int slave_id_read(struct i2c_client *client, u8 i2c_addr,
+				u16 reg, u8 *val)
+{
+	struct i2c_msg msg[2];
+	unsigned char data[2];
+	int rval;
+
+	/* override i2c_addr */
+	msg[0].addr = i2c_addr;
+	msg[0].flags = 0;
+	data[0] = (u8) (reg >> 8);
+	data[1] = (u8) (reg & 0xff);
+	msg[0].buf = data;
+	msg[0].len = 2;
+
+	msg[1].addr = i2c_addr;
+	msg[1].flags = I2C_M_RD;
+	msg[1].buf = data;
+	msg[1].len = 1;
+
+	rval = i2c_transfer(client->adapter, msg, 2);
+
+	if (rval < 0)
+		return rval;
+
+	*val = data[0];
+
+	return 0;
+}
+
+static bool slave_detect(struct ti960 *va, u8 i2c_addr,
+		const struct slave_register_devid *slave_devid, u8 len)
+{
+	struct i2c_client *client = va->sd.client;
+	int i;
+	int rval;
+	unsigned char val;
+
+	for (i = 0; i < len; i++) {
+		rval = slave_id_read(client, i2c_addr,
+			slave_devid[i].reg, &val);
+		if (rval) {
+			pr_err("slave id read fail %d\n", rval);
+			break;
+		}
+		if (val != slave_devid[i].val_expected)
+			break;
+	}
+
+	if (i == len)
+		return true;
+
+	return false;
+}
+
+/*
+* Common functions for ti960 subdev.
+*/
+static int ti960_find_subdev_index(struct ti960 *va, struct ici_ext_subdev *sd)
+{
+	int i;
+
+	for (i = 0; i < NR_OF_TI960_SINK_PADS; i++) {
+		if (va->sub_devs[i].sd == sd)
+			return i;
+	}
+
+	WARN_ON(1);
+
+	return -EINVAL;
+}
+
+static int ti960_rx_port_config(struct ti960 *va, int rx_port)
+{
+	int rval, i;
+	unsigned int csi_vc_map;
+
+	/* Select RX port. */
+	rval = regmap_write(va->regmap8, TI960_RX_PORT_SEL,
+			(rx_port << 4) + (1 << rx_port));
+	if (rval) {
+		pr_err("Failed to select RX port.\n");
+		return rval;
+	}
+
+	/* Config port work mode. */
+	rval = regmap_write(va->regmap8, TI960_PORT_CONFIG,
+		TI960_FPD3_CSI);
+	if (rval) {
+		pr_err("Failed to set port config.\n");
+		return rval;
+	}
+
+	/* Config port vc mapping. */
+	rval = regmap_read(va->regmap8, TI960_CSI_VC_MAP, &csi_vc_map);
+	if (rval < 0) {
+		pr_err("960 reg read ret=%x", rval);
+		return rval;
+	}
+
+	for (i = 0; i < NR_OF_TI960_SINK_PADS; i++) {
+		if (rx_port != vc_map[i].rx_port)
+			continue;
+		csi_vc_map &= ~(0x3 << (vc_map[i].sink_stream & 0x3) * 2);
+		csi_vc_map |= (vc_map[i].source_stream & 0x3)
+			<< (vc_map[i].sink_stream & 0x3) * 2;
+	}
+
+	pr_info("%s, rx_port: %d, csi_vc_map: %x\n",
+		__func__, rx_port, csi_vc_map);
+	rval = regmap_write(va->regmap8, TI960_CSI_VC_MAP,
+		csi_vc_map);
+
+	if (rval) {
+		pr_err("Failed to set port config.\n");
+		return rval;
+	}
+
+	return 0;
+}
+
+
+static int ti960_set_stream(struct ici_isys_node *node, void *ip, int enable)
+{
+	struct ti960 *va;
+	struct ici_ext_subdev *ssd, *sd, *sensor_sd;
+	int j, rval;
+	unsigned short rx_port;
+	unsigned short ser_alias;
+	DECLARE_BITMAP(rx_port_enabled, 32);
+
+	pr_debug("TI960 set stream, enable %d\n", enable);
+
+	ssd = node->sd;
+	if (!ssd)
+		return -EINVAL;
+
+	sd = i2c_get_clientdata(ssd->client);
+	if (!sd)
+		return -EINVAL;
+
+	va = to_ti960(sd);
+	if (!va)
+		return -EINVAL;
+
+	bitmap_zero(rx_port_enabled, 32);
+
+	j = ti960_find_subdev_index(va, ssd);
+	if (j < 0)
+		return -EINVAL;
+
+	rx_port = va->sub_devs[j].rx_port;
+	ser_alias = va->sub_devs[j].ser_i2c_addr;
+	rval = ti960_rx_port_config(va, rx_port);
+	if (rval < 0)
+		return rval;
+
+	bitmap_set(rx_port_enabled, rx_port, 1);
+
+	pr_info("%s, set stream for %s, enable %d\n", __func__,
+		va->sub_devs[j].sd_name, enable);
+
+	/*
+	 * Enable the rx port receiver
+	 * TODO : now all control channel is map to i2c slave port 0
+	 */
+	rval = ti960_reg_set_bit(va, TI960_RX_PORT_CTL, rx_port, enable);
+	if (rval) {
+		pr_err("Failed to turn port %d's receiver to %d\n", rx_port, enable);
+		return rval;
+	}
+
+	sensor_sd = i2c_get_clientdata(va->sub_devs[j].sensor_client);
+	if (!sensor_sd)
+		return -EINVAL;
+
+	if (!sensor_sd->node.node_set_streaming)
+		return -EINVAL;
+
+	sensor_sd->node.node_set_streaming(&sensor_sd->node, NULL, enable);
+
+	/* Enable rx port forward 
+	 * TODO : now all rx port is map to csi-0
+	 */
+	rval = ti960_reg_set_bit(va, TI960_FWD_CTL1, rx_port + 4, !enable);
+	if (rval) {
+		pr_err("Failed to forward RX port %d. Enable %d\n", rx_port, enable);
+		return rval;
+	}
+
+	return 0;
+}
+
+static int ti960_get_param(struct ici_ext_sd_param *param)
+{
+	param->val = 400000000;
+	return 0;
+}
+
+static int ti960_get_menu_item(struct ici_ext_sd_param *param, u32 idx)
+{
+	return 0;
+}
+
+static int ti960_set_param(struct ici_ext_sd_param *param)
+{
+	return 0;
+}
+
+static int ti960_set_power(struct ici_isys_node *node, int on)
+{
+	struct ici_ext_subdev *ssd = node->sd;
+	struct ti960 *va;
+	int ret;
+	u8 val;
+	struct ici_ext_subdev *sd = i2c_get_clientdata(ssd->client);
+
+	if (!sd)
+		return -EINVAL;
+
+	va = to_ti960(sd);
+
+	if (!va)
+		return -EINVAL;
+
+	pr_info("%s, %d\n", __func__, on);
+	ret = regmap_write(va->regmap8, TI960_RESET,
+			   (on) ? TI960_POWER_ON : TI960_POWER_OFF);
+	if (ret || !on)
+		return ret;
+
+	ret = regmap_write(va->regmap8, TI960_CSI_PLL_CTL,
+				ti960_op_sys_clock_reg_val[1]);
+	if (ret)
+		return ret;
+
+	/* Config csi port work mode
+	 * TODO : the value 0x03 is hard code here
+	 */
+	ret = regmap_write(va->regmap8, TI960_FWD_CTL2, on ? 0x03 : 0x0);
+	if (ret) {
+		pr_err("Failed to config csi port's work mode\n");
+		return ret;
+	}
+
+	/*
+	 * Config specific csi port.
+	 * TODO : now we only config csi-0
+	 */
+	val = TI960_CSI_ENABLE;	// 4 lane | not continuous clock mode | enable csi output
+	regmap_write(va->regmap8, TI960_CSI_PORT_SEL, 0x01);
+	return regmap_write(va->regmap8, TI960_CSI_CTL, val);
+}
+
 static int ti960_enum_mbus_code(struct ici_isys_node *node,
 	struct ici_pad_supported_format_desc *psfd)
 {
@@ -380,33 +622,6 @@ static int ti960_get_selection(struct ici_isys_node *node,
 	return 0;
 }
 
-static int ti960_map_subdevs_addr(struct ti960 *va)
-{
-	unsigned short rx_port, phy_i2c_addr, alias_i2c_addr;
-	int i, rval;
-
-	for (i = 0; i < NR_OF_TI960_SINK_PADS; i++) {
-		rx_port = va->sub_devs[i].rx_port;
-		phy_i2c_addr = va->sub_devs[i].phy_i2c_addr;
-		alias_i2c_addr = va->sub_devs[i].alias_i2c_addr;
-
-		if (!phy_i2c_addr || !alias_i2c_addr)
-			continue;
-
-		rval = ti960_map_phy_i2c_addr(va, rx_port, phy_i2c_addr);
-		if (rval)
-			return rval;
-
-		/* set 7bit alias i2c addr */
-		rval = ti960_map_alias_i2c_addr(va, rx_port,
-						alias_i2c_addr << 1);
-		if (rval)
-			return rval;
-	}
-
-	return 0;
-}
-
 static int ti960_init_ext_subdev(struct ti960_subdev_info *info,
 				struct ti960_subdev *subdev,
 				struct ici_ext_subdev_register *reg,
@@ -442,164 +657,6 @@ static int ti960_init_ext_subdev(struct ti960_subdev_info *info,
 	return rval;
 }
 
-static int ti960_registered(struct ici_ext_subdev_register *reg)
-{
-	struct ici_ext_subdev *subdev = reg->sd;
-	struct ti960 *va = to_ti960(subdev);
-	struct ti960_subdev *sd;
-	struct i2c_client *client = subdev->client;
-	struct ici_ext_subdev_register sd_register = {0};
-	int i, k, rval;
-
-	if (!reg->sd || !reg->setup_node || !reg->create_link) {
-		pr_err("%s, error\n", __func__);
-		return -EINVAL;
-	}
-
-	va->reg = *reg;
-	va->create_link = reg->create_link;
-
-	/*
-	 * ti960->sd represents the ti960 and ti960->sub_devs
-	 * represents every port/vc/sensor
-	 */
-	subdev->get_param = ti960_get_param;
-	subdev->set_param = ti960_set_param;
-	subdev->get_menu_item = ti960_get_menu_item;
-
-	for (i = 0, k = 0; i < va->pdata->subdev_num; i++) {
-		struct ti960_subdev_info *info =
-			&va->pdata->subdev_info[i];
-		struct crlmodule_lite_platform_data *pdata =
-			(struct crlmodule_lite_platform_data *)
-			info->board_info.platform_data;
-
-		if (k >= va->nsinks)
-			break;
-
-		rval = ti960_map_ser_alias_addr(va, info->rx_port,
-				info->ser_alias << 1);
-		if (rval)
-			return rval;
-
-
-		if (!ti953_detect(va, info->rx_port, info->ser_alias)) {
-			k++;
-			continue;
-		}
-
-		/*
-		 * The sensors should not share the same pdata structure.
-		 * Clone the pdata for each sensor.
-		 */
-		memcpy(&va->subdev_pdata[k], pdata, sizeof(*pdata));
-
-		va->sub_devs[k].fsin_gpio = va->subdev_pdata[k].fsin;
-
-		/* Spin sensor subdev suffix name */
-		va->subdev_pdata[k].suffix = info->suffix;
-
-		/*
-		 * Change the gpio value to have xshutdown
-		 * and rx port included, so in gpio_set those
-		 * can be caculated from it.
-		 */
-		va->subdev_pdata[k].xshutdown += va->gc.base +
-					info->rx_port * NR_OF_GPIOS_PER_PORT;
-		info->board_info.platform_data = &va->subdev_pdata[k];
-
-		if (!info->phy_i2c_addr || !info->board_info.addr) {
-			pr_err("can't find the physical and alias addr.\n");
-			return -EINVAL;
-		}
-
-		/* Map PHY I2C address. */
-		rval = ti960_map_phy_i2c_addr(va, info->rx_port,
-					info->phy_i2c_addr);
-		if (rval)
-			return rval;
-
-		/* Map 7bit ALIAS I2C address. */
-		rval = ti960_map_alias_i2c_addr(va, info->rx_port,
-				info->board_info.addr << 1);
-		if (rval)
-			return rval;
-
-		/* Initialize sensor connected to TI960 */
-		rval = ti960_init_ext_subdev(info, &va->sub_devs[k],
-			reg, client, &sd_register);
-		if (rval) {
-			pr_err("%s, Failed to register external subdev\n",
-				__func__);
-			continue;
-		}
-
-		/* Allocate ici_ext_subdev for each TI960 port */
-		va->sub_devs[k].sd = devm_kzalloc(&client->dev,
-			sizeof(struct ici_ext_subdev),
-			GFP_KERNEL);
-		if (!va->sub_devs[k].sd) {
-			pr_err("%s, Can't create new i2c subdev %d-%04x\n",
-				__func__,
-				info->i2c_adapter_id,
-				info->board_info.addr);
-			continue;
-		}
-
-		va->sub_devs[k].rx_port = info->rx_port;
-		va->sub_devs[k].phy_i2c_addr = info->phy_i2c_addr;
-		va->sub_devs[k].alias_i2c_addr = info->board_info.addr;
-		va->sub_devs[k].ser_i2c_addr = info->ser_alias;
-		memcpy(va->sub_devs[k].sd_name,
-				va->subdev_pdata[k].module_name,
-				min(sizeof(va->sub_devs[k].sd_name) - 1,
-				sizeof(va->subdev_pdata[k].module_name) - 1));
-
-		sd = &va->sub_devs[k];
-		rval = init_ext_sd(va->sd.client, sd, k);
-
-		if (rval)
-			return rval;
-
-		rval = sd_register.create_link(&sd_register.sd->node,
-						sd_register.sd->src_pad,
-						&sd->sd->node, 0, 0);
-
-		if (rval) {
-			pr_err("%s, error creating link\n", __func__);
-			return rval;
-		}
-		k++;
-	}
-
-	/*
-	 * Replace existing create_link address with TI960 create_link
-	 * implementation to create link between TI960 node and CSI2 node
-	 */
-	reg->create_link = create_link;
-
-	rval = ti960_map_subdevs_addr(va);
-	if (rval)
-		return rval;
-
-	return 0;
-}
-
-static int ti960_get_param(struct ici_ext_sd_param *param)
-{
-	param->val = 400000000;
-	return 0;
-}
-
-static int ti960_get_menu_item(struct ici_ext_sd_param *param, u32 idx)
-{
-	return 0;
-}
-
-static int ti960_set_param(struct ici_ext_sd_param *param)
-{
-	return 0;
-}
 
 static int init_ext_sd(struct i2c_client *client,
 	struct ti960_subdev *ti_sd,
@@ -667,209 +724,217 @@ static int create_link(struct ici_isys_node *src_node,
 		return -EINVAL;
 
 	sd = to_ici_ext_subdev(src_node);
-	if (!sd)
+	if (!sd) {
+        pr_err("%s, to_ici_ext_subdev return NULL.\n", __func__);
 		return -EINVAL;
+    }
 
 	va = to_ti960(sd);
-	if (!va)
+	if (!va) {
+        pr_err("%s, to_ti960 return NULL.\n", __func__);
 		return -EINVAL;
+    }
 
-	for (i = 0; i < NR_OF_TI960_SINK_PADS; i++) {
+	for (i = 0; i < va->pdata->subdev_num; i++) {
 		subdev = &va->sub_devs[i];
 		if (!subdev)
 			continue;
+
 		ssd = subdev->sd;
+		if (!ssd)
+			continue;
+
 		ret = va->create_link(&ssd->node,
 			TI960_SRC_PAD,
 			sink_node,
 			sinkpad,
 			0);
-		if (ret)
+		if (ret) {
+            pr_err("%s, create_link failed for subdev %d \n", __func__, i);
 			return ret;
+        }
 	}
 	return 0;
 }
+
+static int ti960_registered(struct ici_ext_subdev_register *reg)
+{
+	struct ici_ext_subdev *subdev = reg->sd;
+	struct ti960 *va = to_ti960(subdev);
+	struct ti960_subdev *sd;
+	struct i2c_client *client = subdev->client;
+	struct ici_ext_subdev_register sd_register = {0};
+	int i, j, rval;
+
+	if (!reg->sd || !reg->setup_node || !reg->create_link) {
+		pr_err("%s, error\n", __func__);
+		return -EINVAL;
+	}
+
+	va->reg = *reg;
+	va->create_link = reg->create_link;
+
+	/*
+	 * ti960->sd represents the ti960 and ti960->sub_devs
+	 * represents every port/vc/sensor
+	 */
+	subdev->get_param = ti960_get_param;
+	subdev->set_param = ti960_set_param;
+	subdev->get_menu_item = ti960_get_menu_item;
+
+	for (i = 0; i < va->pdata->subdev_num; i++) {
+		struct ti960_subdev_info *info =
+			&va->pdata->subdev_info[i];
+		struct crlmodule_lite_platform_data *pdata =
+			(struct crlmodule_lite_platform_data *)
+			info->board_info.platform_data;
+
+		if (i >= va->nsinks)
+			break;
+
+		/*
+		 * 1. Map the i2c alias addr for ti953
+		 */
+		rval = ti960_map_ser_alias_addr(va, info->rx_port,
+				info->ser_alias << 1);
+		if (rval) {
+			pr_err("can't map serializer alias addr on port %d .\n", i);
+			continue;
+		}
+
+		/*
+		 * 2. If ti953 not exist on this port, we will not create subdev for the port
+		 */
+		if (!ti953_detect(va, info->rx_port, info->ser_alias)) {
+			pr_err("can't detect ti953 on port %d .\n", i);
+			ti960_reg_set_bit(va, TI960_RX_PORT_CTL, info->rx_port, 0);
+			continue;
+		}
+
+		/*
+		 * 3. Init ti953
+		 */
+		for (j = 0; j < ARRAY_SIZE(ti953_init_settings); j++) {
+			rval = ti953_reg_write(va, info->rx_port, info->ser_alias,
+				ti953_init_settings[j].reg,
+				ti953_init_settings[j].val);
+			if (rval) {
+				pr_err("ti953 init timeout on port %d \n", info->rx_port);
+				continue;
+			}
+		}
+
+		/*
+		 * The sensors should not share the same pdata structure.
+		 * Clone the pdata for each sensor.
+		 */
+		memcpy(&va->subdev_pdata[i], pdata, sizeof(*pdata));
+		va->sub_devs[i].fsin_gpio = va->subdev_pdata[i].fsin;
+		va->subdev_pdata[i].suffix = info->suffix;
+		va->subdev_pdata[i].xshutdown += va->gc.base +
+					info->rx_port * NR_OF_GPIOS_PER_PORT;
+		info->board_info.platform_data = &va->subdev_pdata[i];
+
+		/*
+		 * 4. Map the i2c alias addr for sensor
+		 */
+		if (!info->phy_i2c_addr || !info->board_info.addr) {
+			pr_err("can't find the physical and alias addr for port %d.\n", info->rx_port);
+			continue;
+		}
+
+		rval = ti960_map_phy_i2c_addr(va, info->rx_port,
+					info->phy_i2c_addr);
+		if (rval) {
+			pr_err("can't map sensor phy i2c addr on port %d .\n", i);
+			continue;
+        }
+
+		/* map 7bit alias i2c address. */
+		rval = ti960_map_alias_i2c_addr(va, info->rx_port,
+				info->board_info.addr << 1);
+		if (rval) {
+			pr_err("can't map sensor alias i2c addr on port %d .\n", i);
+			continue;
+        }
+
+		/*
+		 * 5. Check whether need to hard reset of the sensor
+		 */
+		if(!slave_detect(va, info->board_info.addr,
+                ov2775_devid, ARRAY_SIZE(ov2775_devid))) {
+			pr_info("power-on and reset for ov2775\n");
+			ti953_reg_write(va, 0, info->ser_alias, 0x0e, 0xf0);
+
+			ti953_reg_write(va, 0, info->ser_alias, 0x0d, 0x00);
+			usleep_range(2000, 2010);
+
+			ti953_reg_write(va, 0, info->ser_alias, 0x0d, 0x04);
+			usleep_range(2000, 2010);
+
+			ti953_reg_write(va, 0, info->ser_alias, 0x0d, 0x0c);
+			usleep_range(2000, 2010);
+		}
+
+		/* 
+		 * 6. Initialize sensor connected to ti960
+		 */
+		rval = ti960_init_ext_subdev(info, &va->sub_devs[i],
+			reg, client, &sd_register);
+		if (rval) {
+			pr_err("failed to register external subdev on port %d .\n", i);
+			continue;
+		}
+
+		va->sub_devs[i].sd = devm_kzalloc(&client->dev,
+			sizeof(struct ici_ext_subdev),
+			GFP_KERNEL);
+		if (!va->sub_devs[i].sd) {
+			pr_err("can't create new i2c subdev %d-%04x\n",
+				info->i2c_adapter_id,
+				info->board_info.addr);
+			continue;
+		}
+
+		va->sub_devs[i].rx_port = info->rx_port;
+		va->sub_devs[i].phy_i2c_addr = info->phy_i2c_addr;
+		va->sub_devs[i].alias_i2c_addr = info->board_info.addr;
+		va->sub_devs[i].ser_i2c_addr = info->ser_alias;
+		memcpy(va->sub_devs[i].sd_name,
+				va->subdev_pdata[i].module_name,
+				min(sizeof(va->sub_devs[i].sd_name) - 1,
+				sizeof(va->subdev_pdata[i].module_name) - 1));
+
+		sd = &va->sub_devs[i];
+		rval = init_ext_sd(va->sd.client, sd, i);
+
+		if (rval) {
+            pr_err("init ext sd failed for subdev on port %d\n", i);
+			continue;
+        }
+
+		rval = sd_register.create_link(&sd_register.sd->node,
+						sd_register.sd->src_pad,
+						&sd->sd->node, 0, 0);
+
+		if (rval) {
+			pr_err("creating link failed for subdev on port %d\n", i);
+			continue;
+		}
+	}
+
+	/*
+	 * Replace existing create_link address with TI960 create_link
+	 * implementation to create link between TI960 node and CSI2 node
+	 */
+	reg->create_link = create_link;
+
+	return 0;
+}
+
 static void ti960_unregistered(struct ici_ext_subdev *subdev)
 {
 	pr_debug("%s\n", __func__);
-}
-
-static int ti960_set_power(struct ici_isys_node *node, int on)
-{
-	struct ici_ext_subdev *ssd = node->sd;
-	struct ti960 *va;
-	int ret;
-	u8 val;
-	struct ici_ext_subdev *sd = i2c_get_clientdata(ssd->client);
-
-	if (!sd)
-		return -EINVAL;
-
-	va = to_ti960(sd);
-
-	if (!va)
-		return -EINVAL;
-
-	pr_debug("%s, %d\n", __func__, on);
-	ret = regmap_write(va->regmap8, TI960_RESET,
-			   (on) ? TI960_POWER_ON : TI960_POWER_OFF);
-	if (ret || !on)
-		return ret;
-
-	ret = regmap_write(va->regmap8, TI960_CSI_PLL_CTL,
-				ti960_op_sys_clock_reg_val[0]);
-
-	if (ret)
-		return ret;
-	val = TI960_CSI_ENABLE;
-
-	//TODO: pegging to 0.8 Gbps for now
-	return regmap_write(va->regmap8, TI960_CSI_CTL, val);
-}
-
-static int ti960_rx_port_config(struct ti960 *va, int rx_port)
-{
-	int rval, i;
-	unsigned int csi_vc_map;
-
-	/* Select RX port. */
-	rval = regmap_write(va->regmap8, TI960_RX_PORT_SEL,
-			(rx_port << 4) + (1 << rx_port));
-	if (rval) {
-		pr_err("Failed to select RX port.\n");
-		return rval;
-	}
-
-	rval = regmap_write(va->regmap8, TI960_PORT_CONFIG,
-		TI960_FPD3_CSI);
-	if (rval) {
-		pr_err("Failed to set port config.\n");
-		return rval;
-	}
-
-	/*
-	 * CSI VC MAPPING.
-	 */
-	rval = regmap_read(va->regmap8, TI960_CSI_VC_MAP, &csi_vc_map);
-	if (rval < 0) {
-		pr_err("960 reg read ret=%x", rval);
-		return rval;
-	}
-
-	for (i = 0; i < NR_OF_TI960_SINK_PADS; i++) {
-		if (rx_port != vc_map[i].rx_port)
-			continue;
-		csi_vc_map &= ~(0x3 << (vc_map[i].sink_stream & 0x3) * 2);
-		csi_vc_map |= (vc_map[i].source_stream & 0x3)
-			<< (vc_map[i].sink_stream & 0x3) * 2;
-	}
-
-	pr_debug("%s, rx_port: %d, csi_vc_map: %x\n",
-		__func__, rx_port, csi_vc_map);
-	rval = regmap_write(va->regmap8, TI960_CSI_VC_MAP,
-		csi_vc_map);
-
-	if (rval) {
-		pr_err("Failed to set port config.\n");
-		return rval;
-	}
-
-	return 0;
-}
-
-static int ti960_find_subdev_index(struct ti960 *va, struct ici_ext_subdev *sd)
-{
-	int i;
-
-	for (i = 0; i < NR_OF_TI960_SINK_PADS; i++) {
-		if (va->sub_devs[i].sd == sd)
-			return i;
-	}
-
-	WARN_ON(1);
-
-	return -EINVAL;
-}
-
-static int ti960_set_stream(struct ici_isys_node *node, void *ip, int enable)
-{
-	struct ti960 *va;
-	struct ici_ext_subdev *ssd, *sd, *sensor_sd;
-	int j, rval;
-	unsigned short rx_port;
-	unsigned short ser_alias;
-	DECLARE_BITMAP(rx_port_enabled, 32);
-
-	pr_debug("TI960 set stream, enable %d\n", enable);
-
-	ssd = node->sd;
-	if (!ssd)
-		return -EINVAL;
-
-	sd = i2c_get_clientdata(ssd->client);
-	if (!sd)
-		return -EINVAL;
-
-	va = to_ti960(sd);
-	if (!va)
-		return -EINVAL;
-
-	bitmap_zero(rx_port_enabled, 32);
-
-	j = ti960_find_subdev_index(va, ssd);
-	if (j < 0)
-		return -EINVAL;
-
-	rx_port = va->sub_devs[j].rx_port;
-	ser_alias = va->sub_devs[j].ser_i2c_addr;
-	rval = ti960_rx_port_config(va, rx_port);
-	if (rval < 0)
-		return rval;
-
-	bitmap_set(rx_port_enabled, rx_port, 1);
-
-	pr_info("%s, set stream for %s, enable %d\n", __func__,
-		va->sub_devs[j].sd_name, enable);
-
-	/*
-	 * FIXME: For now we only turn on 2 rx port.
-	 * Port 0 and port 1.
-	 */
-	rval = regmap_write(va->regmap8, 0x0c, 0x03);
-	if (rval) {
-		pr_err("Failed to turn on port 0 and port 1\n");
-		return rval;
-	}
-
-	sensor_sd = i2c_get_clientdata(va->sub_devs[j].sensor_client);
-	if (!sensor_sd)
-		return -EINVAL;
-
-	if (!sensor_sd->node.node_set_streaming)
-		return -EINVAL;
-
-	sensor_sd->node.node_set_streaming(&sensor_sd->node, NULL, enable);
-
-	/*
-	 * FIXME: workaround for ov495 block issue.
-	 * reset Ser TI953, to avoid ov495 block,
-	 * only do reset for ov495, then it won't
-	 * break other sensors.
-	 */
-	ti953_reg_write(va, rx_port, ser_alias, 0x0e, 0xf0);
-	msleep(50);
-	ti953_reg_write(va, rx_port, ser_alias, 0x0d, 00);
-	msleep(50);
-	ti953_reg_write(va, rx_port, ser_alias, 0x0d, 0x1);
-
-	/* RX port forward */
-	rval = ti960_reg_set_bit(va, TI960_FWD_CTL1, rx_port + 4, !enable);
-	if (rval) {
-		pr_err("Failed to forward RX port %d. Enable %d\n", rx_port, enable);
-		return rval;
-	}
-
-	return 0;
 }
 
 static int ti960_register_subdev(struct i2c_client *client, struct ti960 *va)
@@ -888,98 +953,23 @@ static int ti960_register_subdev(struct i2c_client *client, struct ti960 *va)
 	return 0;
 }
 
-struct slave_register_devid {
-	u16 reg;
-	u8 val_expected;
-};
-
-#define OV495_I2C_PHY_ADDR	0x48
-#define OV495_I2C_ALIAS_ADDR	0x30
-
-static const struct slave_register_devid ov495_devid[] = {
-	{0x3000, 0x51},
-	{0x3001, 0x49},
-	{0x3002, 0x56},
-	{0x3003, 0x4f},
-};
-
-/*
- * read sensor id reg of 16 bit addr, and 8 bit val
- */
-static int slave_id_read(struct i2c_client *client, u8 i2c_addr,
-				u16 reg, u8 *val)
-{
-	struct i2c_msg msg[2];
-	unsigned char data[2];
-	int rval;
-
-	/* override i2c_addr */
-	msg[0].addr = i2c_addr;
-	msg[0].flags = 0;
-	data[0] = (u8) (reg >> 8);
-	data[1] = (u8) (reg & 0xff);
-	msg[0].buf = data;
-	msg[0].len = 2;
-
-	msg[1].addr = i2c_addr;
-	msg[1].flags = I2C_M_RD;
-	msg[1].buf = data;
-	msg[1].len = 1;
-
-	rval = i2c_transfer(client->adapter, msg, 2);
-
-	if (rval < 0)
-		return rval;
-
-	*val = data[0];
-
-	return 0;
-}
-
-static bool slave_detect(struct ti960 *va, u8 i2c_addr,
-		const struct slave_register_devid *slave_devid, u8 len)
-{
-	struct i2c_client *client = va->sd.client;
-	int i;
-	int rval;
-	unsigned char val;
-
-	for (i = 0; i < len; i++) {
-		rval = slave_id_read(client, i2c_addr,
-			slave_devid[i].reg, &val);
-		if (rval) {
-			pr_err("slave id read fail %d\n", rval);
-			break;
-		}
-		if (val != slave_devid[i].val_expected)
-			break;
-	}
-
-	if (i == len)
-		return true;
-
-	return false;
-}
-
 static int ti960_init(struct ti960 *va)
 {
 	unsigned int reset_gpio = va->pdata->reset_gpio;
 	int i, rval;
 	unsigned int val;
 	int m;
-	int rx_port = 0;
-	int ser_alias = 0;
-	bool ov495_detected;
 
 	gpio_set_value(reset_gpio, 1);
 	usleep_range(2000, 3000);
-	pr_err("Setting reset gpio %d to 1.\n", reset_gpio);
+	pr_info("Setting reset gpio %d to 1.\n", reset_gpio);
 
 	rval = ti960_reg_read(va, TI960_DEVID, &val);
 	if (rval) {
 		pr_err("Failed to read device ID of TI960!\n");
 		return rval;
 	}
+
 	pr_info("TI960 device ID: 0x%X\n", val);
 
 	for (i = 0; i < ARRAY_SIZE(ti960_gpio_settings); i++) {
@@ -995,11 +985,6 @@ static int ti960_init(struct ti960 *va)
 	}
 	usleep_range(10000, 11000);
 
-	/*
-	 * fixed value of sensor phy, ser_alias, port config
-	 * for ti960 each port, not yet known sensor platform data here.
-	 */
-	ser_alias = 0x58;
 	for (i = 0; i < ARRAY_SIZE(ti960_init_settings); i++) {
 		rval = regmap_write(va->regmap8,
 			ti960_init_settings[i].reg,
@@ -1015,52 +1000,6 @@ static int ti960_init(struct ti960 *va)
 	/* wait for ti953 ready */
 	msleep(200);
 
-	for (i = 0; i < NR_OF_TI960_SINK_PADS; i++) {
-		unsigned short rx_port, phy_i2c_addr, alias_i2c_addr;
-
-		rx_port = i;
-		phy_i2c_addr = OV495_I2C_PHY_ADDR;
-		alias_i2c_addr = OV495_I2C_ALIAS_ADDR;
-
-		rval = ti960_map_phy_i2c_addr(va, rx_port, phy_i2c_addr);
-		if (rval)
-			return rval;
-
-		rval = ti960_map_alias_i2c_addr(va, rx_port,
-						alias_i2c_addr << 1);
-		if (rval)
-			return rval;
-
-		ov495_detected = slave_detect(va, alias_i2c_addr,
-					ov495_devid, ARRAY_SIZE(ov495_devid));
-
-		/* unmap to clear i2c addr space */
-		rval = ti960_map_phy_i2c_addr(va, rx_port, 0);
-		if (rval)
-			return rval;
-
-		rval = ti960_map_alias_i2c_addr(va, rx_port, 0);
-		if (rval)
-			return rval;
-
-		if (ov495_detected) {
-			pr_info("ov495 detected on port %d\n", rx_port);
-			break;
-		}
-	}
-
-	for (i = 0; i < ARRAY_SIZE(ti953_init_settings); i++) {
-		if (ov495_detected)
-			break;
-		rval = ti953_reg_write(va, rx_port, ser_alias,
-			ti953_init_settings[i].reg,
-			ti953_init_settings[i].val);
-		if (rval) {
-			pr_err("port %d, ti953 write timeout %d\n", 0, rval);
-			break;
-		}
-	}
-
 	for (m = 0; m < ARRAY_SIZE(ti960_init_settings_2); m++) {
 		rval = regmap_write(va->regmap8,
 			ti960_init_settings_2[m].reg,
@@ -1072,45 +1011,6 @@ static int ti960_init(struct ti960 *va)
 			break;
 		}
 	}
-
-	rval = regmap_write(va->regmap8, TI960_RX_PORT_SEL,
-		(rx_port << 4) + (1 << rx_port));
-	if (rval)
-		return rval;
-	for (m = 1; m < ARRAY_SIZE(ti960_init_settings_3); m++) {
-		rval = regmap_write(va->regmap8,
-			ti960_init_settings_3[m].reg,
-			ti960_init_settings_3[m].val);
-		if (rval) {
-			pr_err("Failed to write TI960 init setting 2, reg %2x, val %2x\n",
-				ti960_init_settings_3[m].reg,
-				ti960_init_settings_3[m].val);
-			break;
-		}
-	}
-
-	for (i = 0; i < ARRAY_SIZE(ti953_init_settings_2); i++) {
-		if (ov495_detected)
-			break;
-		rval = ti953_reg_write(va, rx_port, ser_alias,
-			ti953_init_settings_2[i].reg,
-			ti953_init_settings_2[i].val);
-		if (rval) {
-			pr_err("port %d, ti953 write timeout %d\n", 0, rval);
-			break;
-		}
-	}
-
-	/* reset and power for ti953 */
-	if (!ov495_detected) {
-		ti953_reg_write(va, 0, ser_alias, 0x0d, 00);
-		msleep(50);
-		ti953_reg_write(va, 0, ser_alias, 0x0d, 0x3);
-	}
-
-	rval = ti960_map_subdevs_addr(va);
-	if (rval)
-		return rval;
 
 	return 0;
 }
@@ -1196,7 +1096,7 @@ static int ti960_probe(struct i2c_client *client,
 	if (!va->crop || !va->compose)
 		return -ENOMEM;
 
-	for (i = 0; i < va->npads; i++) {
+	for (i = 0; i < va->nsinks; i++) {
 		va->ffmts[i] = devm_kcalloc(&client->dev, va->nstreams,
 					    sizeof(struct ici_pad_framefmt),
 					    GFP_KERNEL);
