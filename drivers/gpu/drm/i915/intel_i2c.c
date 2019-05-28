@@ -818,6 +818,7 @@ int intel_setup_gmbus(struct drm_i915_private *dev_priv)
 	struct intel_gmbus *bus;
 	unsigned int pin;
 	int ret;
+	int i2c_bus_num = 8;
 
 	if (INTEL_INFO(dev_priv)->num_pipes == 0)
 		return 0;
@@ -857,6 +858,8 @@ int intel_setup_gmbus(struct drm_i915_private *dev_priv)
 		 */
 		bus->adapter.retries = 1;
 
+		bus->adapter.nr = i2c_bus_num++;
+
 		/* By default use a conservative clock rate */
 		bus->reg0 = pin | GMBUS_RATE_100KHZ;
 
@@ -866,7 +869,7 @@ int intel_setup_gmbus(struct drm_i915_private *dev_priv)
 
 		intel_gpio_setup(bus, pin);
 
-		ret = i2c_add_adapter(&bus->adapter);
+		ret = i2c_add_numbered_adapter(&bus->adapter);
 		if (ret)
 			goto err;
 	}
