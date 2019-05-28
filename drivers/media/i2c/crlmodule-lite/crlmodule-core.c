@@ -1953,9 +1953,8 @@ static int crlmodule_identify_module(
 {
 	struct crl_sensor *sensor = to_crlmodule_sensor(subdev);
 	struct i2c_client *client = sensor->src->sd.client;
-	unsigned int size = 0;
+	unsigned int size = 0, pos;
 	char *id_string;
-	char *temp;
 	int i, ret;
 	u32 val;
 
@@ -1980,18 +1979,13 @@ static int crlmodule_identify_module(
 		if (ret)
 			goto out;
 
-		temp = kzalloc(sensor->sensor_ds->id_regs[i].width, GFP_KERNEL);
-		if (!temp) {
-			ret = -ENOMEM;
-			goto out;
-		}
-		snprintf(temp, sensor->sensor_ds->id_regs[i].width, "0x%x ",
-			 val);
-		strcat(id_string, temp);
-		snprintf(id_string, sensor->sensor_ds->id_regs[i].width,
-			 "%s 0x%x ", temp, val);
+		if (i)
+			pos += snprintf(id_string + pos, size - pos, " 0x%x", val);
+		else
+			pos = snprintf(id_string, size, "0x%x", val);
+		if (pos >= size)
+			break;
 
-		kfree(temp);
 	}
 
 	/* TODO! Check here if this module in the supported list
