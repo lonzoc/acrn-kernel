@@ -4,6 +4,7 @@
 #include <linux/device.h>
 #include <linux/gpio.h>
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/slab.h>
 #include <linux/wait.h>
 #include <linux/delay.h>
@@ -61,6 +62,42 @@ struct ti960 {
 	//struct v4l2_ctrl *test_pattern;
 };
 
+/* Module Param */
+static bool ti953_pattern_enable;
+static bool ti960_pattern_enable;
+module_param(ti953_pattern_enable, bool, S_IRUGO | S_IWUSR);
+module_param(ti960_pattern_enable, bool, S_IRUGO | S_IWUSR);
+
+static char *pattern_format = "RAW12";
+static int pattern_width = 1920;
+static int pattern_height = 1080;
+module_param(pattern_format, charp, S_IRUGO | S_IWUSR);
+module_param(pattern_width, uint, S_IRUGO | S_IWUSR);
+module_param(pattern_height, uint, S_IRUGO | S_IWUSR);
+
+struct csi2_specification_dataformat {
+	char name[16];
+	uint8_t code;
+	uint8_t ppb;	//pixels per block
+	uint8_t bsize;	//block size in bytes
+};
+
+/* ref to csi2 specification chapter <11 Data Formats> */
+const struct csi2_specification_dataformat csi2_df[] = {
+	{ "UYVY",   0x1E, 2, 4 },
+	{ "RGB555", 0x21, 1, 2 },
+	{ "RGB565", 0x22, 1, 2 },
+	{ "RGB666", 0x23, 4, 9 },
+	{ "RGB888", 0x24, 1, 3 },
+	{ "RAW6",   0x28, 4, 3 },
+	{ "RAW7",   0x29, 8, 7 },
+	{ "RAW8",   0x2A, 1, 1 },
+	{ "RAW10",  0x2B, 4, 5 },
+	{ "RAW12",  0x2C, 2, 3 },
+	{ "RAW14",  0x2D, 4, 7 },
+	{ }
+};
+
 /* Useful macros */
 #define to_ti960(_sd) container_of(_sd, struct ti960, sd)
 #define to_ici_ext_subdev(_node) \
@@ -108,6 +145,11 @@ static int ti953_reg_write(struct ti960 *va, unsigned short rx_port,
 	int ret;
 	int retry, timeout = 10;
 	struct i2c_client *client = va->sd.client;
+
+	if (reg == 0xff) {
+		msleep(val);
+		return 0;
+	}
 
 	pr_debug("%s port %d, ser_alias %x, reg %x, val %x",
 		__func__, rx_port, ser_alias, reg, val);
@@ -401,17 +443,233 @@ static int ti960_rx_port_config(struct ti960 *va, int rx_port)
 	return 0;
 }
 
+static int prepare_pattern_register(void)
+{
+	int j;
+	const struct csi2_specification_dataformat *df;
+	uint8_t colorbars = 3;
+	uint8_t code = 0, ppb = 0, bsize = 0;
+	uint8_t pgen_cfg;
+	uint8_t pgen_csi_di;
+	uint16_t pgen_width;
+	uint16_t pgen_height;
+	uint16_t pgen_barsize;
+
+	for (df = csi2_df; df->bsize; df++) {
+		if (!strncmp(pattern_format, df->name, strlen(df->name))) {
+			code = df->code;
+			ppb = df->ppb;
+			bsize = df->bsize;
+			break;
+		}
+	}
+
+	if (!code || !ppb || !bsize) {
+		pr_err("pattern prepare failed : not support format %s", pattern_format);
+		return -EINVAL;
+	}
+
+	// PGEN_CFG : number of color bars | block size
+	pgen_cfg = colorbars << 4 | bsize;
+	// PGEN_CSI_DI : virtual channel identifier | data type
+	pgen_csi_di = code;
+	// PGEN_LINE_SIZE = width * bpp
+	pgen_width = pattern_width * bsize / ppb;
+	pgen_height = pattern_height;
+	// PGEN_BAR_SIZE : ref to ti document
+	pgen_barsize = pattern_width / ppb / (1 << colorbars ) * bsize;
+
+	for (j = 0; j < ARRAY_SIZE(ti_pattern_settings); j++) {
+		if (ti_pattern_settings[j].reg == 0xB1 &&
+			ti_pattern_settings[j].val == 0x02) {
+			ti_pattern_settings[++j].val = pgen_cfg;
+			continue;
+		}
+
+		if (ti_pattern_settings[j].reg == 0xB1 &&
+			ti_pattern_settings[j].val == 0x03) {
+			ti_pattern_settings[++j].val = pgen_csi_di;
+			continue;
+		}
+
+		if (ti_pattern_settings[j].reg == 0xB1 &&
+			ti_pattern_settings[j].val == 0x04) {
+			ti_pattern_settings[++j].val = pgen_width >> 8;
+			continue;
+		}
+
+		if (ti_pattern_settings[j].reg == 0xB1 &&
+			ti_pattern_settings[j].val == 0x05) {
+			ti_pattern_settings[++j].val = pgen_width & 0xff;
+			continue;
+		}
+
+		if (ti_pattern_settings[j].reg == 0xB1 &&
+			ti_pattern_settings[j].val == 0x06) {
+			ti_pattern_settings[++j].val = pgen_barsize >> 8;
+			continue;
+		}
+
+		if (ti_pattern_settings[j].reg == 0xB1 &&
+			ti_pattern_settings[j].val == 0x07) {
+			ti_pattern_settings[++j].val = pgen_barsize & 0xff;
+			continue;
+		}
+
+		if (ti_pattern_settings[j].reg == 0xB1 &&
+			ti_pattern_settings[j].val == 0x08) {
+			ti_pattern_settings[++j].val = pgen_height >> 8;
+			continue;
+		}
+
+		if (ti_pattern_settings[j].reg == 0xB1 &&
+			ti_pattern_settings[j].val == 0x09) {
+			ti_pattern_settings[++j].val = pgen_height & 0xff;
+			continue;
+		}
+
+		if (ti_pattern_settings[j].reg == 0xB1 &&
+			ti_pattern_settings[j].val == 0x0A) {
+			ti_pattern_settings[++j].val = pgen_height >> 8;
+			continue;
+		}
+
+		if (ti_pattern_settings[j].reg == 0xB1 &&
+			ti_pattern_settings[j].val == 0x0B) {
+			ti_pattern_settings[++j].val = pgen_height & 0xff;
+			continue;
+		}
+	}
+
+	pr_info("pattern mode prepared : %dx%d@%s", pattern_width, pattern_height, pattern_format);
+	return 0;
+}
+
+static int ti953_pattern_mode(struct ti960 *va, struct ti960_subdev *subdev, int enable)
+{
+	int i, rval;
+
+	if (!enable) {
+		ti953_reg_write(va, subdev->rx_port, subdev->ser_i2c_addr, 0xB0, 0x00);
+		ti953_reg_write(va, subdev->rx_port, subdev->ser_i2c_addr, 0xB1, 0x01);
+		ti953_reg_write(va, subdev->rx_port, subdev->ser_i2c_addr, 0xB2, 0x00);
+		return 0;
+	}
+
+	rval = prepare_pattern_register();
+	if (rval) {
+		pr_err("ti953 pattern mode enable failed\n");
+		return rval;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(ti_pattern_settings); i++) {
+		rval = ti953_reg_write(va, subdev->rx_port, subdev->ser_i2c_addr,
+			ti_pattern_settings[i].reg,
+			ti_pattern_settings[i].val);
+		if (rval) {
+			pr_err("Failed to write ti953 pattern register, reg %2x, val %2x\n",
+				ti_pattern_settings[i].reg,
+				ti_pattern_settings[i].val);
+			return rval;
+		}
+
+	}
+
+	pr_info("ti953 pattern mode enable successful\n");
+	return 0;
+}
+
+static int ti960_pattern_mode(struct ti960 *va, struct ti960_subdev *subdev, int enable)
+{
+	int i, rval;
+
+	if (!enable) {
+		regmap_write(va->regmap8, 0xB0, 0x00);
+		regmap_write(va->regmap8, 0xB1, 0x01);
+		regmap_write(va->regmap8, 0xB2, 0x00);
+		return 0;
+	}
+
+	rval = prepare_pattern_register();
+	if (rval) {
+		pr_err("ti960 pattern mode enable failed\n");
+		return rval;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(ti_pattern_settings); i++) {
+		rval = regmap_write(va->regmap8,
+			ti_pattern_settings[i].reg,
+			ti_pattern_settings[i].val);
+		if (rval) {
+			pr_err("Failed to write ti953 pattern register, reg %2x, val %2x\n",
+				ti_pattern_settings[i].reg,
+				ti_pattern_settings[i].val);
+			return rval;
+		}
+	}
+
+	pr_info("ti960 pattern mode enable successful\n");
+	return 0;
+}
+
+
+static int normal_set_stream(struct ti960 *va, struct ti960_subdev *subdev, int enable)
+{
+
+	int rval;
+	unsigned short rx_port;
+	unsigned short ser_alias;
+
+	pr_debug("TI960 set stream, enable %d\n", enable);
+
+	rx_port = subdev->rx_port;
+	ser_alias = subdev->ser_i2c_addr;
+	rval = ti960_rx_port_config(va, rx_port);
+	if (rval < 0)
+		return rval;
+
+	pr_info("%s, set stream for %s, enable %d\n", __func__,
+		subdev->sd_name, enable);
+
+	/*
+	 * Enable the rx port receiver
+	 * Note : we need to enable the port even if stream off 
+	 * because it is needed to operate ti963 and sensor through i2c
+	 * TODO : now all control channel is map to i2c slave port 0
+	 */
+	rval = ti960_reg_set_bit(va, TI960_RX_PORT_CTL, rx_port, 1);
+	if (rval) {
+		pr_err("Failed to turn port %d's receiver to %d\n", rx_port, enable);
+		return rval;
+	}
+
+	if (ti953_pattern_enable)
+		ti953_pattern_mode(va, subdev, enable);
+
+	if (ti960_pattern_enable) {
+		// need to disable port forward first
+		ti960_reg_set_bit(va, TI960_FWD_CTL1, rx_port + 4, 1);
+		return ti960_pattern_mode(va, subdev, enable);
+	}
+
+	/* Enable rx port forward 
+	 * TODO : now all rx port is map to csi-0
+	 */
+	rval = ti960_reg_set_bit(va, TI960_FWD_CTL1, rx_port + 4, !enable);
+	if (rval) {
+		pr_err("Failed to forward RX port %d. Enable %d\n", rx_port, enable);
+		return rval;
+	}
+
+	return 0;
+}
 
 static int ti960_set_stream(struct ici_isys_node *node, void *ip, int enable)
 {
 	struct ti960 *va;
-	struct ici_ext_subdev *ssd, *sd, *sensor_sd;
-	int j, rval;
-	unsigned short rx_port;
-	unsigned short ser_alias;
-	DECLARE_BITMAP(rx_port_enabled, 32);
-
-	pr_debug("TI960 set stream, enable %d\n", enable);
+	struct ti960_subdev *subdev;
+	struct ici_ext_subdev *ssd, *sd;
+	int i;
 
 	ssd = node->sd;
 	if (!ssd)
@@ -425,52 +683,13 @@ static int ti960_set_stream(struct ici_isys_node *node, void *ip, int enable)
 	if (!va)
 		return -EINVAL;
 
-	bitmap_zero(rx_port_enabled, 32);
-
-	j = ti960_find_subdev_index(va, ssd);
-	if (j < 0)
+	i = ti960_find_subdev_index(va, ssd);
+	if (i < 0)
 		return -EINVAL;
 
-	rx_port = va->sub_devs[j].rx_port;
-	ser_alias = va->sub_devs[j].ser_i2c_addr;
-	rval = ti960_rx_port_config(va, rx_port);
-	if (rval < 0)
-		return rval;
+	subdev = &va->sub_devs[i];
 
-	bitmap_set(rx_port_enabled, rx_port, 1);
-
-	pr_info("%s, set stream for %s, enable %d\n", __func__,
-		va->sub_devs[j].sd_name, enable);
-
-	/*
-	 * Enable the rx port receiver
-	 * TODO : now all control channel is map to i2c slave port 0
-	 */
-	rval = ti960_reg_set_bit(va, TI960_RX_PORT_CTL, rx_port, enable);
-	if (rval) {
-		pr_err("Failed to turn port %d's receiver to %d\n", rx_port, enable);
-		return rval;
-	}
-
-	sensor_sd = i2c_get_clientdata(va->sub_devs[j].sensor_client);
-	if (!sensor_sd)
-		return -EINVAL;
-
-	if (!sensor_sd->node.node_set_streaming)
-		return -EINVAL;
-
-	sensor_sd->node.node_set_streaming(&sensor_sd->node, NULL, enable);
-
-	/* Enable rx port forward 
-	 * TODO : now all rx port is map to csi-0
-	 */
-	rval = ti960_reg_set_bit(va, TI960_FWD_CTL1, rx_port + 4, !enable);
-	if (rval) {
-		pr_err("Failed to forward RX port %d. Enable %d\n", rx_port, enable);
-		return rval;
-	}
-
-	return 0;
+	return normal_set_stream(va, subdev, enable);
 }
 
 static int ti960_get_param(struct ici_ext_sd_param *param)
