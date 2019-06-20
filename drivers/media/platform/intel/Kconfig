@@ -106,6 +106,12 @@ config INTEL_IPU4_OV2775
 	---help---
 	"ov2775 camera sensor"
 
+config INTEL_IPU4_OV495_OV10640
+	bool "Compile platorm data for OV495 + OV10640"
+	depends on INTEL_IPU4_ICI_BXT_P_PDATA
+	---help---
+	"ov495 and ov10640 camera sensor"
+
 config INTEL_IPU4_ICI_BXT_P_PDATA
         depends on VIDEO_INTEL_IPU && VIDEO_INTEL_ICI
         bool "Enable built in platform data for Broxton-P ICI driver"

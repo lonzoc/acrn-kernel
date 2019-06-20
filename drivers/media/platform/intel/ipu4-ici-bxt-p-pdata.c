@@ -481,6 +481,29 @@ static struct crlmodule_lite_platform_data ov2775_pdata = {
 };
 #endif
 
+#ifdef CONFIG_INTEL_IPU4_OV495_OV10640
+#define DUMMY_LANES	2
+#define DUMMY_I2C_PHY_ADDR	0xff    // dummy, should be 0xff, which means we will not control sensor
+#define DUMMY_ADDRESS_A	0x40
+#define DUMMY_ADDRESS_B	0x41
+#define DUMMY_ADDRESS_C	0x42
+#define DUMMY_ADDRESS_D	0x43
+
+#define OV495_OV10640A_SER_ADDRESS	0x58
+#define OV495_OV10640B_SER_ADDRESS	0x59
+#define OV495_OV10640C_SER_ADDRESS	0x5a
+#define OV495_OV10640D_SER_ADDRESS	0x5b
+
+static struct crlmodule_lite_platform_data ov495_ov10640_pdata = {
+	.lanes = DUMMY_LANES,
+	.ext_clk = 24000000,
+	.op_sys_clock = (uint64_t[]){ 87750000 },
+	.module_name = "DUMMY",
+	.id_string = "0x27 0x70",
+	.fsin = 2, /* gpio 2 used for FSIN */
+};
+#endif
+
 #if IS_ENABLED(CONFIG_VIDEO_TI960_ICI)
 #define TI960_I2C_ADAPTER	0 //ref 'ls -l /sys/bus/i2c/devices & 557555-apl-eds-vol1-rev2p4.pdf :: <2.1 PCI Device ID>'
 #define TI960_I2C_ADAPTER_2	4
@@ -595,6 +618,56 @@ static struct ti960_subdev_info ti960_subdevs[] = {
 		.rx_port = 3,
 		.phy_i2c_addr = OV2775_I2C_PHY_ADDR,
 		.ser_alias = OV2775D_SER_ADDRESS,
+		.suffix = 'd',
+	},
+#endif
+#ifdef CONFIG_INTEL_IPU4_OV495_OV10640
+	{
+		.board_info = {
+			.type = CRLMODULE_LITE_NAME,
+			.addr = DUMMY_ADDRESS_A,
+			.platform_data = &ov495_ov10640_pdata,
+		},
+		.i2c_adapter_id = TI960_I2C_ADAPTER,
+		.rx_port = 0,
+		.phy_i2c_addr = DUMMY_I2C_PHY_ADDR,
+		.ser_alias = OV495_OV10640A_SER_ADDRESS,
+		.suffix = 'a',
+	},
+	{
+		.board_info = {
+			.type = CRLMODULE_LITE_NAME,
+			.addr = DUMMY_ADDRESS_B,
+			.platform_data = &ov495_ov10640_pdata,
+		},
+		.i2c_adapter_id = TI960_I2C_ADAPTER,
+		.rx_port = 1,
+		.phy_i2c_addr = DUMMY_I2C_PHY_ADDR,
+		.ser_alias = OV495_OV10640B_SER_ADDRESS,
+		.suffix = 'b',
+	},
+	{
+		.board_info = {
+			.type = CRLMODULE_LITE_NAME,
+			.addr = DUMMY_ADDRESS_C,
+			.platform_data = &ov495_ov10640_pdata,
+		},
+		.i2c_adapter_id = TI960_I2C_ADAPTER,
+		.rx_port = 2,
+		.phy_i2c_addr = DUMMY_I2C_PHY_ADDR,
+		.ser_alias = OV495_OV10640C_SER_ADDRESS,
+		.suffix = 'c',
+	},
+	{
+		.board_info = {
+			.type = CRLMODULE_LITE_NAME,
+			.addr = DUMMY_ADDRESS_D,
+			.platform_data = &ov495_ov10640_pdata,
+		},
+		.i2c_adapter_id = TI960_I2C_ADAPTER,
+		.rx_port = 3,
+		.phy_i2c_addr = DUMMY_I2C_PHY_ADDR,
+		.ser_alias = OV495_OV10640D_SER_ADDRESS,
 		.suffix = 'd',
 	},
 #endif

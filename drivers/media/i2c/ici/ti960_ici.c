@@ -68,9 +68,9 @@ static bool ti960_pattern_enable;
 module_param(ti953_pattern_enable, bool, S_IRUGO | S_IWUSR);
 module_param(ti960_pattern_enable, bool, S_IRUGO | S_IWUSR);
 
-static char *pattern_format = "RAW12";
-static int pattern_width = 1920;
-static int pattern_height = 1080;
+static char *pattern_format = "UYVY";
+static int pattern_width = 1280;
+static int pattern_height = 720;
 module_param(pattern_format, charp, S_IRUGO | S_IWUSR);
 module_param(pattern_width, uint, S_IRUGO | S_IWUSR);
 module_param(pattern_height, uint, S_IRUGO | S_IWUSR);
@@ -1012,6 +1012,47 @@ static int ti960_registered(struct ici_ext_subdev_register *reg)
 			break;
 
 		/*
+		 * The sensors should not share the same pdata structure.
+		 * Clone the pdata for each sensor.
+		 */
+		memcpy(&va->subdev_pdata[i], pdata, sizeof(*pdata));
+		va->sub_devs[i].fsin_gpio = va->subdev_pdata[i].fsin;
+		va->subdev_pdata[i].suffix = info->suffix;
+		va->subdev_pdata[i].xshutdown += va->gc.base +
+					info->rx_port * NR_OF_GPIOS_PER_PORT;
+		info->board_info.platform_data = &va->subdev_pdata[i];
+
+		/*
+		 * 0. create node for ti960
+		 */
+		va->sub_devs[i].sd = devm_kzalloc(&client->dev,
+			sizeof(struct ici_ext_subdev),
+			GFP_KERNEL);
+		if (!va->sub_devs[i].sd) {
+			pr_err("can't create new i2c subdev %d-%04x\n",
+				info->i2c_adapter_id,
+				info->board_info.addr);
+			continue;
+		}
+
+		va->sub_devs[i].rx_port = info->rx_port;
+		va->sub_devs[i].phy_i2c_addr = info->phy_i2c_addr;
+		va->sub_devs[i].alias_i2c_addr = info->board_info.addr;
+		va->sub_devs[i].ser_i2c_addr = info->ser_alias;
+		memcpy(va->sub_devs[i].sd_name,
+				va->subdev_pdata[i].module_name,
+				min(sizeof(va->sub_devs[i].sd_name) - 1,
+				sizeof(va->subdev_pdata[i].module_name) - 1));
+
+		sd = &va->sub_devs[i];
+		rval = init_ext_sd(va->sd.client, sd, i);
+
+		if (rval) {
+			pr_err("init ext sd failed for subdev on port %d\n", i);
+			continue;
+		}
+
+		/*
 		 * 1. Map the i2c alias addr for ti953
 		 */
 		rval = ti960_map_ser_alias_addr(va, info->rx_port,
@@ -1030,6 +1071,10 @@ static int ti960_registered(struct ici_ext_subdev_register *reg)
 			continue;
 		}
 
+		/* special and ugly case, which means we don't need and cann't configure ti953 and sensor*/
+		if (info->phy_i2c_addr == 0xff)
+			continue;
+
 		/*
 		 * 3. Init ti953
 		 */
@@ -1042,17 +1087,6 @@ static int ti960_registered(struct ici_ext_subdev_register *reg)
 				continue;
 			}
 		}
-
-		/*
-		 * The sensors should not share the same pdata structure.
-		 * Clone the pdata for each sensor.
-		 */
-		memcpy(&va->subdev_pdata[i], pdata, sizeof(*pdata));
-		va->sub_devs[i].fsin_gpio = va->subdev_pdata[i].fsin;
-		va->subdev_pdata[i].suffix = info->suffix;
-		va->subdev_pdata[i].xshutdown += va->gc.base +
-					info->rx_port * NR_OF_GPIOS_PER_PORT;
-		info->board_info.platform_data = &va->subdev_pdata[i];
 
 		/*
 		 * 4. Map the i2c alias addr for sensor
@@ -1104,33 +1138,6 @@ static int ti960_registered(struct ici_ext_subdev_register *reg)
 			pr_err("failed to register external subdev on port %d .\n", i);
 			continue;
 		}
-
-		va->sub_devs[i].sd = devm_kzalloc(&client->dev,
-			sizeof(struct ici_ext_subdev),
-			GFP_KERNEL);
-		if (!va->sub_devs[i].sd) {
-			pr_err("can't create new i2c subdev %d-%04x\n",
-				info->i2c_adapter_id,
-				info->board_info.addr);
-			continue;
-		}
-
-		va->sub_devs[i].rx_port = info->rx_port;
-		va->sub_devs[i].phy_i2c_addr = info->phy_i2c_addr;
-		va->sub_devs[i].alias_i2c_addr = info->board_info.addr;
-		va->sub_devs[i].ser_i2c_addr = info->ser_alias;
-		memcpy(va->sub_devs[i].sd_name,
-				va->subdev_pdata[i].module_name,
-				min(sizeof(va->sub_devs[i].sd_name) - 1,
-				sizeof(va->subdev_pdata[i].module_name) - 1));
-
-		sd = &va->sub_devs[i];
-		rval = init_ext_sd(va->sd.client, sd, i);
-
-		if (rval) {
-            pr_err("init ext sd failed for subdev on port %d\n", i);
-			continue;
-        }
 
 		rval = sd_register.create_link(&sd_register.sd->node,
 						sd_register.sd->src_pad,
