@@ -35,6 +35,7 @@ snd-soc-bxtp_ivi_rse_rt298-objs := bxtp_ivi_rse_rt298.o
 snd-soc-bxtp_ivi_hu_rt298-objs := bxtp_ivi_hu_rt298.o
 snd-soc-bxtp_ivi_m3-objs := bxtp_ivi_m3.o
 snd-soc-bxtp_ivi_generic-objs := bxtp_ivi_generic.o
+snd-soc-sst_bxt_hwtc-objs := bxt_hwtc.o
 
 obj-$(CONFIG_SND_SOC_INTEL_HASWELL_MACH) += snd-soc-sst-haswell.o
 obj-$(CONFIG_SND_SOC_INTEL_BYT_RT5640_MACH) += snd-soc-sst-byt-rt5640-mach.o
@@ -72,3 +73,6 @@ obj-$(CONFIG_SND_SOC_INTEL_BXTP_IVI_RSE_MACH) += snd-soc-bxtp_ivi_rse_rt298.o
 obj-$(CONFIG_SND_SOC_INTEL_BXTP_IVI_HU_MACH) += snd-soc-bxtp_ivi_hu_rt298.o
 obj-$(CONFIG_SND_SOC_INTEL_BXTP_IVI_M3_MACH) += snd-soc-bxtp_ivi_m3.o
 obj-$(CONFIG_SND_SOC_INTEL_BXTP_IVI_GENERIC_MACH) += snd-soc-bxtp_ivi_generic.o
+
+# hwtc/094
+obj-$(CONFIG_SND_SOC_INTEL_BXT_SOS_HWTC_CDCP_MACH) += snd-soc-sst_bxt_hwtc.o
