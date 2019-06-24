@@ -560,6 +560,11 @@ int setup_virtual_monitors(struct intel_vgpu *vgpu)
 						connector->panel.fixed_mode);
 			} else if (connector->detect_edid) {
 				edid = connector->detect_edid;
+			} else if (connector->encoder && connector->encoder->base.crtc &&
+						connector->encoder->base.crtc->mode.status == MODE_OK) {
+				// FIXME: hwtc/094 find correct edid for this connector
+				edid = intel_gvt_create_edid_from_mode(
+						&connector->encoder->base.crtc->mode);
 			} else {
 				continue;
 			}
