@@ -1000,22 +1000,26 @@ static struct snd_soc_dai_driver skl_fe_dai[] = {
 	.ops = &skl_pcm_dai_ops,
 	.playback = {
 		.stream_name = "Speaker Playback",
-		.channels_min = HDA_QUAD,
+		.channels_min = HDA_MONO,
 		.channels_max = HDA_QUAD,
 		.rates = SNDRV_PCM_RATE_48000,
-		.formats = SNDRV_PCM_FMTBIT_S32_LE,
+		.formats = SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE |
+			SNDRV_PCM_FMTBIT_S32_LE,
+
 	}
 },
-#if IS_ENABLED(CONFIG_SND_SOC_INTEL_BXT_SOS_TDF8532_MACH)
+#if IS_ENABLED(CONFIG_SND_SOC_INTEL_BXT_SOS_TDF8532_MACH) || \
+	IS_ENABLED(CONFIG_SND_SOC_INTEL_BXT_SOS_HWTC_CDCP_MACH)
 {
 	.name = "SpeakerSos Pin",
 	.ops = &skl_pcm_dai_ops,
 	.playback = {
 		.stream_name = "SpeakerSos Playback",
-		.channels_min = HDA_QUAD,
+		.channels_min = HDA_MONO,
 		.channels_max = HDA_QUAD,
 		.rates = SNDRV_PCM_RATE_48000,
-		.formats = SNDRV_PCM_FMTBIT_S32_LE,
+		.formats = SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE |
+			SNDRV_PCM_FMTBIT_S32_LE,
 	}
 },
 #endif
@@ -1412,6 +1416,7 @@ static struct snd_soc_dai_driver skl_fe_dai[] = {
 static struct snd_soc_dai_driver skl_platform_dai[] = {
 #if IS_ENABLED(CONFIG_SND_SOC_INTEL_BXT_SOS_TDF8532_MACH) || \
 	IS_ENABLED(CONFIG_SND_SOC_INTEL_BXT_TDF8532_MACH) || \
+	IS_ENABLED(CONFIG_SND_SOC_INTEL_BXT_SOS_HWTC_CDCP_MACH) || \
 	IS_ENABLED(CONFIG_SND_SOC_INTEL_BXT_ULL_MACH)
 {
 	.name = "SSP5 Pin",

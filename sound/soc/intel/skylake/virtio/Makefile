@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0
 snd-soc-skl-virtio-sst-objs := skl-virtio-sst.o
-snd-soc-skl-virtio-card-objs := skl-virtio-card.o
+# hwtc/094 use hwtc's snd card driver
+snd-soc-skl-virtio-card-objs := skl-virtio-card-hwtc.o
+#snd-soc-skl-virtio-card-objs := skl-virtio-card.o
 snd-soc-skl-virtio-fe-objs := skl-virtio-kctl.o skl-virtio-fe.o
 
 obj-$(CONFIG_SND_SOC_INTEL_SKYLAKE_VIRTIO_FE) := snd-soc-skl-virtio-sst.o \
