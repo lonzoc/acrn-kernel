@@ -29,6 +29,7 @@
 #include <drm/drm_edid.h>
 #include <drm/i915_drm.h>
 #include <linux/gpio/consumer.h>
+#include <linux/gpio.h>
 #include <linux/slab.h>
 #include <video/mipi_display.h>
 #include <asm/intel-mid.h>
@@ -305,11 +306,16 @@ static void bxt_exec_gpio(struct drm_i915_private *dev_priv,
 	struct gpio_desc *gpio_desc = bxt_gpio_table[gpio_index];
 
 	if (!gpio_desc) {
+#if 0
 		gpio_desc = devm_gpiod_get_index(dev_priv->drm.dev,
 						 NULL, gpio_index,
 						 value ? GPIOD_OUT_LOW :
 						 GPIOD_OUT_HIGH);
-
+#else
+		/* hwtc/094 W/A */
+		gpio_desc = gpio_to_desc(gpio_source  << 8 | gpio_index);
+		gpio_request(gpio_source << 8 | gpio_index, "dsi8x-en");
+#endif
 		if (IS_ERR_OR_NULL(gpio_desc)) {
 			DRM_ERROR("GPIO index %u request failed (%ld)\n",
 				  gpio_index, PTR_ERR(gpio_desc));
@@ -319,6 +325,8 @@ static void bxt_exec_gpio(struct drm_i915_private *dev_priv,
 		bxt_gpio_table[gpio_index] = gpio_desc;
 	}
 
+	DRM_DEBUG_KMS(">>> gpio %d set to %d\n", gpio_source << 8 | gpio_index, value);
+	gpiod_direction_output(gpio_desc, value);
 	gpiod_set_value(gpio_desc, value);
 }
 
@@ -350,16 +358,58 @@ static const u8 *mipi_exec_gpio(struct intel_dsi *intel_dsi, const u8 *data)
 	else if (IS_CHERRYVIEW(dev_priv))
 		chv_exec_gpio(dev_priv, gpio_source, gpio_number, value);
 	else
-		bxt_exec_gpio(dev_priv, gpio_source, gpio_index, value);
+		bxt_exec_gpio(dev_priv, gpio_index, gpio_number, value);
 
 	return data;
 }
 
 static const u8 *mipi_exec_i2c(struct intel_dsi *intel_dsi, const u8 *data)
 {
-	DRM_DEBUG_KMS("Skipping I2C element execution\n");
+	struct i2c_adapter *adap;
+	struct i2c_msg msg = {0};
+	int bus_nr, ret;
+	u16 slave_addr;
+	u8 reg, cnt;
+	u8 *buf, *payload;
 
-	return data + *(data + 6) + 7;
+	DRM_DEBUG_KMS("Processing I2C element execution\n");
+
+	data += 2;
+	bus_nr = *data++;
+	slave_addr = le16_to_cpu(*((__le16*)data));
+	data += 2;
+	reg = *data++;
+	cnt = *data++;
+	payload = (u8 *)data;
+	data += cnt;
+
+	DRM_DEBUG_KMS(">>> bus_nr:%d slave_addr:0x%x reg:0x%x cnt:%d\n",
+			bus_nr, slave_addr, reg, cnt);
+
+	adap = i2c_get_adapter(bus_nr);
+	if (adap) {
+		buf = kmalloc(cnt + 1, GFP_KERNEL);
+		if (buf) {
+			buf[0] = reg;
+			memcpy(&buf[1], payload, cnt);
+
+			msg.addr = slave_addr;
+			msg.flags = 0; /* WR */
+			msg.len = cnt + 1;
+			msg.buf = buf;
+
+			ret = i2c_transfer(adap, &msg, 1);
+			if (ret != 1) {
+				DRM_ERROR("I2C transfer %d\n", ret);
+			}
+			kfree(buf);
+		}
+		i2c_put_adapter(adap);
+	} else {
+		DRM_ERROR("Invalid I2C bus number: %d\n", bus_nr);
+	}
+
+	return data;
 }
 
 static const u8 *mipi_exec_spi(struct intel_dsi *intel_dsi, const u8 *data)
