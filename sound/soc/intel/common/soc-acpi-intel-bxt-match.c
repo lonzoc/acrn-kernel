@@ -68,6 +68,13 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_bxt_machines[] = {
 		.drv_name = "bxt_ivi_ull",
 		.fw_filename = "intel/dsp_fw_ull_bxtn.bin",
 	},
+#elif IS_ENABLED(CONFIG_SND_SOC_INTEL_BXT_SOS_HWTC_CDCP_MACH)
+	{
+		.id = "INT34C3",
+		.drv_name = "bxt_hwtc",
+		.fw_filename = "intel/dsp_fw_bxtn.bin",
+		.asoc_plat_name = "0000:00:0e.0",
+	},
 #else
 	{
 		.id = "INT34C3",
