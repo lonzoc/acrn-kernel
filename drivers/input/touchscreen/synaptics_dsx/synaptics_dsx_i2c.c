@@ -40,6 +40,8 @@
 #include <linux/types.h>
 #include <linux/of_gpio.h>
 #include <linux/platform_device.h>
+#include <linux/acpi.h>
+#include <linux/interrupt.h>
 #include <linux/input/synaptics_dsx.h>
 #include "synaptics_dsx_core.h"
 
@@ -248,6 +250,28 @@ static int parse_dt(struct device *dev, struct synaptics_dsx_board_data *bdata)
 
 	return 0;
 }
+#endif
+
+#if CONFIG_ACPI
+static int parse_acpi(struct device *dev, struct synaptics_dsx_board_data *bdata)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	bdata->irq = client->irq;
+	bdata->irq_gpio = -1;
+	//bdata->irq_on_state = 0;
+	bdata->power_gpio = -1;
+	//bdata->power_on_state = 0;
+	bdata->reset_gpio = -1;
+	//bdata->reset_on_state = 0;
+	bdata->max_y_for_2d = -1;
+	bdata->irq_flags = IRQF_ONESHOT | IRQF_TRIGGER_FALLING;
+	bdata->i2c_addr = client->addr;
+	bdata->ub_i2c_addr = -1;
+
+	return 0;
+}
+
 #endif
 
 static int synaptics_rmi4_i2c_alloc_buf(struct synaptics_rmi4_data *rmi4_data,
@@ -534,8 +558,8 @@ static int synaptics_rmi4_i2c_probe(struct i2c_client *client,
 		return -ENOMEM;
 	}
 
-#ifdef CONFIG_OF
-	if (client->dev.of_node) {
+#if defined(CONFIG_OF) || defined(CONFIG_ACPI)
+	if (client->dev.of_node || client->dev.fwnode) {
 		hw_if.board_data = devm_kzalloc(&client->dev,
 				sizeof(struct synaptics_dsx_board_data),
 				GFP_KERNEL);
@@ -563,8 +587,13 @@ static int synaptics_rmi4_i2c_probe(struct i2c_client *client,
 					__func__);
 			return -ENOMEM;
 		}
-		parse_dt(&client->dev, hw_if.board_data);
 	}
+#endif
+
+#ifdef CONFIG_OF
+	parse_dt(&client->dev, hw_if.board_data);
+#elif defined(CONFIG_ACPI)
+	parse_acpi(&client->dev, hw_if.board_data);
 #else
 	hw_if.board_data = client->dev.platform_data;
 #endif
@@ -613,15 +642,23 @@ static struct of_device_id synaptics_rmi4_of_match_table[] = {
 	{},
 };
 MODULE_DEVICE_TABLE(of, synaptics_rmi4_of_match_table);
-#else
-#define synaptics_rmi4_of_match_table NULL
+#endif
+
+#ifdef CONFIG_ACPI
+static struct acpi_device_id synaptics_rmi4_acpi_match_table[] = {
+	{.id = "SYNA7885"},
+	{},
+};
+//NOTE: manully load 
+//MODULE_DEVICE_TABLE(acpi, synaptics_rmi4_acpi_match_table);
 #endif
 
 static struct i2c_driver synaptics_rmi4_i2c_driver = {
 	.driver = {
 		.name = I2C_DRIVER_NAME,
 		.owner = THIS_MODULE,
-		.of_match_table = synaptics_rmi4_of_match_table,
+		.of_match_table = of_match_ptr(synaptics_rmi4_of_match_table),
+		.acpi_match_table = ACPI_PTR(synaptics_rmi4_acpi_match_table),
 	},
 	.probe = synaptics_rmi4_i2c_probe,
 	.remove = synaptics_rmi4_i2c_remove,

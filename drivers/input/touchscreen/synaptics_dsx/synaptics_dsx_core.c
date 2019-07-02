@@ -1768,15 +1768,16 @@ static void synaptics_rmi4_sensor_report(struct synaptics_rmi4_data *rmi4_data,
 static irqreturn_t synaptics_rmi4_irq(int irq, void *data)
 {
 	struct synaptics_rmi4_data *rmi4_data = data;
+#if 0
 	const struct synaptics_dsx_board_data *bdata =
 			rmi4_data->hw_if->board_data;
 
 	if (gpio_get_value(bdata->irq_gpio) != bdata->irq_on_state)
 		goto exit;
+#endif
 
 	synaptics_rmi4_sensor_report(rmi4_data, true);
-
-exit:
+//exit:
 	return IRQ_HANDLED;
 }
 
@@ -3569,14 +3570,16 @@ static int synaptics_rmi4_set_gpio(struct synaptics_rmi4_data *rmi4_data)
 	const struct synaptics_dsx_board_data *bdata =
 			rmi4_data->hw_if->board_data;
 
-	retval = synaptics_rmi4_gpio_setup(
-			bdata->irq_gpio,
-			true, 0, 0);
-	if (retval < 0) {
-		dev_err(rmi4_data->pdev->dev.parent,
-				"%s: Failed to configure attention GPIO\n",
-				__func__);
-		goto err_gpio_irq;
+	if (bdata->irq_gpio >= 0) {
+		retval = synaptics_rmi4_gpio_setup(
+				bdata->irq_gpio,
+				true, 0, 0);
+		if (retval < 0) {
+			dev_err(rmi4_data->pdev->dev.parent,
+					"%s: Failed to configure attention GPIO\n",
+					__func__);
+			goto err_gpio_irq;
+		}
 	}
 
 	if (bdata->power_gpio >= 0) {
@@ -3622,7 +3625,9 @@ err_gpio_reset:
 		synaptics_rmi4_gpio_setup(bdata->power_gpio, false, 0, 0);
 
 err_gpio_power:
-	synaptics_rmi4_gpio_setup(bdata->irq_gpio, false, 0, 0);
+	if (bdata->irq_gpio) {
+		synaptics_rmi4_gpio_setup(bdata->irq_gpio, false, 0, 0);
+	}
 
 err_gpio_irq:
 	return retval;
@@ -4273,7 +4278,11 @@ static int synaptics_rmi4_probe(struct platform_device *pdev)
 		exp_data.initialized = true;
 	}
 
-	rmi4_data->irq = gpio_to_irq(bdata->irq_gpio);
+	if (bdata->irq > 0) {
+		rmi4_data->irq = bdata->irq;
+	} else {
+		rmi4_data->irq = gpio_to_irq(bdata->irq_gpio);
+	}
 
 	retval = synaptics_rmi4_irq_enable(rmi4_data, true, false);
 	if (retval < 0) {
@@ -4374,7 +4383,9 @@ err_enable_irq:
 	}
 
 err_set_input_dev:
-	synaptics_rmi4_gpio_setup(bdata->irq_gpio, false, 0, 0);
+	if (bdata->irq_gpio >= 0) {
+		synaptics_rmi4_gpio_setup(bdata->irq_gpio, false, 0, 0);
+	}
 
 	if (bdata->reset_gpio >= 0)
 		synaptics_rmi4_gpio_setup(bdata->reset_gpio, false, 0, 0);
@@ -4445,7 +4456,9 @@ static int synaptics_rmi4_remove(struct platform_device *pdev)
 		rmi4_data->stylus_dev = NULL;
 	}
 
-	synaptics_rmi4_gpio_setup(bdata->irq_gpio, false, 0, 0);
+	if (bdata->irq_gpio >= 0) {
+		synaptics_rmi4_gpio_setup(bdata->irq_gpio, false, 0, 0);
+	}
 
 	if (bdata->reset_gpio >= 0)
 		synaptics_rmi4_gpio_setup(bdata->reset_gpio, false, 0, 0);
