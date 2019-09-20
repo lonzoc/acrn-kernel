@@ -2241,7 +2241,7 @@ static void mxt_regulator_enable(struct mxt_data *data)
 	if (!data->reg_vdd || !data->reg_avdd)
 		return;
 
-	gpio_set_value(data->pdata->gpio_reset, 0);
+	gpiod_set_value(data->pdata->gpio_reset, 0);
 
 	error = regulator_enable(data->reg_vdd);
 	if (error)
@@ -2257,7 +2257,7 @@ static void mxt_regulator_enable(struct mxt_data *data)
 	 * voltage
 	 */
 	msleep(MXT_REGULATOR_DELAY);
-	gpio_set_value(data->pdata->gpio_reset, 1);
+	gpiod_set_value(data->pdata->gpio_reset, 1);
 	msleep(MXT_CHG_DELAY);
 
 retry_wait:
@@ -2286,7 +2286,7 @@ static int mxt_probe_regulators(struct mxt_data *data)
 	int error;
 
 	/* Must have reset GPIO to use regulator support */
-	if (!gpio_is_valid(data->pdata->gpio_reset)) {
+	if (!data->pdata->gpio_reset) {
 		error = -EINVAL;
 		goto fail;
 	}
@@ -2542,6 +2542,8 @@ static int mxt_initialize_input_device(struct mxt_data *data)
 
 	input_dev->phys = data->phys;
 	input_dev->id.bustype = BUS_I2C;
+	input_dev->id.vendor = 0xA000;
+	input_dev->id.product = pdata->product_id ? pdata->product_id : 0x10;
 	input_dev->dev.parent = dev;
 	input_dev->open = mxt_input_open;
 	input_dev->close = mxt_input_close;
@@ -3477,7 +3479,7 @@ static const struct mxt_platform_data *mxt_parse_dt(struct i2c_client *client)
 	if (!pdata)
 		return ERR_PTR(-ENOMEM);
 
-	pdata->gpio_reset = of_get_named_gpio_flags(np, "atmel,reset-gpio",
+	pdata->gpio_reset = of_get_named_gpiod_flags(np, "atmel,reset-gpio",
 						    0, NULL);
 
 	of_property_read_string(np, "atmel,cfg_name", &pdata->cfg_name);
@@ -3593,7 +3595,10 @@ static const struct mxt_platform_data *mxt_parse_acpi(struct i2c_client *client)
 {
 	struct acpi_device *adev;
 	const struct dmi_system_id *system_id;
-	const struct mxt_acpi_platform_data *acpi_pdata;
+	struct mxt_acpi_platform_data *acpi_pdata;
+	struct gpio_desc *gpio;
+	u16 value;
+	int ret;
 
 	/*
 	 * Ignore ACPI devices representing bootloader mode.
@@ -3612,22 +3617,42 @@ static const struct mxt_platform_data *mxt_parse_acpi(struct i2c_client *client)
 	if (!adev)
 		return ERR_PTR(-ENOENT);
 
+	/* get pdata from dmi */
 	system_id = dmi_first_match(mxt_dmi_table);
-	if (!system_id)
-		return ERR_PTR(-ENOENT);
+	if (system_id) {
+		acpi_pdata = system_id->driver_data;
+		if (!acpi_pdata)
+			return ERR_PTR(-ENOENT);
 
-	acpi_pdata = system_id->driver_data;
-	if (!acpi_pdata)
-		return ERR_PTR(-ENOENT);
+		while (acpi_pdata->hid) {
+			if (!strcmp(acpi_device_hid(adev), acpi_pdata->hid))
+				return &acpi_pdata->pdata;
 
-	while (acpi_pdata->hid) {
-		if (!strcmp(acpi_device_hid(adev), acpi_pdata->hid))
-			return &acpi_pdata->pdata;
-
-		acpi_pdata++;
+			acpi_pdata++;
+		}
 	}
 
-	return ERR_PTR(-ENOENT);
+	/* get pdata from acpi dsdt _DSD */
+	acpi_pdata = devm_kzalloc(&client->dev, sizeof(*acpi_pdata), GFP_KERNEL);
+	if (!acpi_pdata) {
+		return ERR_PTR(-ENOMEM);
+	}
+
+	gpio = devm_gpiod_get(&client->dev, "reset", GPIOD_OUT_HIGH);
+	if (!IS_ERR_OR_NULL(gpio)) {
+		acpi_pdata->pdata.gpio_reset = gpio;
+	}
+
+	ret = device_property_read_u16(&client->dev, "product-id", &value);
+	if (ret < 0) {
+		value =  0x10; /* default product ID */
+	}
+	acpi_pdata->pdata.product_id = value;
+
+	/* Set default parameters */
+	acpi_pdata->pdata.irqflags = IRQF_TRIGGER_FALLING;
+
+	return &acpi_pdata->pdata;
 }
 #else
 static const struct mxt_platform_data *mxt_parse_acpi(struct i2c_client *client)

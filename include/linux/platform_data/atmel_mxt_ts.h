@@ -24,9 +24,10 @@ struct mxt_platform_data {
 	enum mxt_suspend_mode suspend_mode;
 	int t15_num_keys;
 	const unsigned int *t15_keymap;
-	unsigned long gpio_reset;
+	struct gpio_desc *gpio_reset;
 	const char *cfg_name;
 	const char *input_name;
+	u16 product_id;
 };
 
 #endif /* __LINUX_PLATFORM_DATA_ATMEL_MXT_TS_H */
