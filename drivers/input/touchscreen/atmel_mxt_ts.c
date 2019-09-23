@@ -3751,6 +3751,9 @@ static int mxt_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		return error;
 	}
 
+	/* hwtc/094 W/A: wait unitl device ready */
+	msleep(100);
+
 	error = mxt_initialize(data);
 	if (error)
 		goto err_free_irq;
