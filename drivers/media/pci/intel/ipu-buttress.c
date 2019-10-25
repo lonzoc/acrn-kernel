@@ -1285,8 +1285,16 @@ int ipu_get_i2c_bus_id(int adapter_id)
 	while ((adapter = i2c_get_adapter(i)) != NULL) {
 		struct device *parent = adapter->dev.parent;
 
-		if (parent && !strncmp(name, dev_name(parent), sizeof(name)))
+		/* hwtc/226 when call i2c_get_adapter will increase adapter
+		 *  kobject reference count, so we need to reduce it.
+		 */
+		if (parent && !strncmp(name, dev_name(parent), sizeof(name))) {
+			i2c_put_adapter(adapter);
 			return i;
+		}else {
+			i2c_put_adapter(adapter);
+		}
+
 		i++;
 	}
 
