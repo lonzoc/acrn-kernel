@@ -1115,6 +1115,7 @@ void drm_dp_aux_init(struct drm_dp_aux *aux)
 	aux->ddc.algo = &drm_dp_i2c_algo;
 	aux->ddc.algo_data = aux;
 	aux->ddc.retries = 3;
+	aux->ddc.nr = -1;
 
 	aux->ddc.lock_ops = &drm_dp_i2c_lock_ops;
 }
@@ -1146,7 +1147,7 @@ int drm_dp_aux_register(struct drm_dp_aux *aux)
 	if (ret)
 		return ret;
 
-	ret = i2c_add_adapter(&aux->ddc);
+	ret = i2c_add_numbered_adapter(&aux->ddc);
 	if (ret) {
 		drm_dp_aux_unregister_devnode(aux);
 		return ret;

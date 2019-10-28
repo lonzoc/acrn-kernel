@@ -1526,6 +1526,7 @@ intel_dp_aux_init(struct intel_dp *intel_dp)
 {
 	struct drm_i915_private *dev_priv = to_i915(intel_dp_to_dev(intel_dp));
 	struct intel_encoder *encoder = &dp_to_dig_port(intel_dp)->base;
+	static int dp_i2c_bus_nr = 14;
 
 	intel_dp->aux_ch = intel_aux_ch(intel_dp);
 	intel_dp->aux_power_domain = intel_aux_power_domain(intel_dp);
@@ -1556,6 +1557,8 @@ intel_dp_aux_init(struct intel_dp *intel_dp)
 		intel_dp->get_aux_send_ctl = g4x_get_aux_send_ctl;
 
 	drm_dp_aux_init(&intel_dp->aux);
+
+	intel_dp->aux.ddc.nr = dp_i2c_bus_nr++;
 
 	/* Failure to allocate our preferred name is not critical */
 	intel_dp->aux.name = kasprintf(GFP_KERNEL, "DPDDC-%c",
