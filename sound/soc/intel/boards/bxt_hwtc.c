@@ -27,6 +27,7 @@ static const struct snd_kcontrol_new broxton_hwtc_controls[] = {
 static const struct snd_soc_dapm_widget broxton_hwtc_widgets[] = {
 	SND_SOC_DAPM_SPK("Speaker", NULL),
 	SND_SOC_DAPM_SPK("SpeakerSos", NULL),
+	SND_SOC_DAPM_MIC("MainMic", NULL),
 };
 
 static const struct snd_soc_dapm_route broxton_hwtc_map[] = {
@@ -36,12 +37,15 @@ static const struct snd_soc_dapm_route broxton_hwtc_map[] = {
 
 	{ "SpeakerSos", NULL, "ssp1 Tx"},
 	{ "ssp1 Tx", NULL, "codec0_out"},
+
+	{ "codec0_in", NULL, "ssp2 Rx"},
+	{ "ssp2 Rx", NULL, "MainMic"},
 };
 
 static struct snd_soc_dai_link broxton_hwtc_dais[] = {
 	/* Front End DAI links */
 	{
-		.name = "Speaker PortA",
+		.name = "Speaker Port",
 		.stream_name = "Speaker",
 		.cpu_dai_name = "Speaker Pin",
 		.platform_name = "0000:00:0e.0",
@@ -56,7 +60,7 @@ static struct snd_soc_dai_link broxton_hwtc_dais[] = {
 		.dpcm_playback = 1,
 	},
 	{
-		.name = "SpeakerSos PortA",
+		.name = "SpeakerSos Port",
 		.stream_name = "SpeakerSos",
 		.cpu_dai_name = "SpeakerSos Pin",
 		.platform_name = "0000:00:0e.0",
@@ -71,53 +75,20 @@ static struct snd_soc_dai_link broxton_hwtc_dais[] = {
 		.dpcm_playback = 1,
 	},
 	{
-		.name = "Speaker PortB",
-		.stream_name = "SystemB",
-		.cpu_dai_name = "System Pin",
+		.name = "MainMic Port",
+		.stream_name = "MainMic Cp",
+		.cpu_dai_name = "Dirana Cp Pin",
 		.platform_name = "0000:00:0e.0",
 		.nonatomic = 1,
 		.dynamic = 1,
 		.codec_name = "snd-soc-dummy",
 		.codec_dai_name = "snd-soc-dummy-dai",
-		.trigger = {
-			SND_SOC_DPCM_TRIGGER_POST,
-			SND_SOC_DPCM_TRIGGER_POST
-		},
-		.dpcm_playback = 1,
-	},
-	{
-		.name = "Speaker PortC",
-		.stream_name = "SystemC",
-		.cpu_dai_name = "System Pin2",
-		.platform_name = "0000:00:0e.0",
-		.nonatomic = 1,
-		.dynamic = 1,
-		.codec_name = "snd-soc-dummy",
-		.codec_dai_name = "snd-soc-dummy-dai",
-		.trigger = {
-			SND_SOC_DPCM_TRIGGER_POST,
-			SND_SOC_DPCM_TRIGGER_POST
-		},
-		.dpcm_playback = 1,
+		.dpcm_capture = 1,
 	},
 
 	/* BE  DAI links */
 	{
-		/* SSP4 - Amplifier */
-		.name = "SSP4-Codec",
-		.id = 0,
-		.cpu_dai_name = "SSP4 Pin",
-		//.codec_name = "i2c-INT34C3:00",
-		//.codec_dai_name = "hwtc-hifi",
-		.codec_name = "snd-soc-dummy",
-		.codec_dai_name = "snd-soc-dummy-dai",
-		.platform_name = "0000:00:0e.0",
-		.ignore_suspend = 1,
-		.dpcm_playback = 1,
-		.no_pcm = 1,
-	},
-	{
-		/* SSP1 - Amplifier */
+		/* SSP1 - ADAU1467 Playback */
 		.name = "SSP1-Codec",
 		.id = 1,
 		.cpu_dai_name = "SSP1 Pin",
@@ -129,15 +100,15 @@ static struct snd_soc_dai_link broxton_hwtc_dais[] = {
 		.no_pcm = 1,
 	},
 	{
-		/* SSP0 - Amplifier */
-		.name = "SSP0-Codec",
+		/* SSP2 - ADAU1467 Capture */
+		.name = "SSP2-Codec",
 		.id = 2,
-		.cpu_dai_name = "SSP0 Pin",
+		.cpu_dai_name = "SSP2 Pin",
 		.codec_name = "snd-soc-dummy",
 		.codec_dai_name = "snd-soc-dummy-dai",
 		.platform_name = "0000:00:0e.0",
 		.ignore_suspend = 1,
-		.dpcm_playback = 1,
+		.dpcm_capture = 1,
 		.no_pcm = 1,
 	},
 };
@@ -190,6 +161,6 @@ static struct platform_driver broxton_hwtc_audio = {
 module_platform_driver(broxton_hwtc_audio)
 
 /* Module information */
-MODULE_DESCRIPTION("Intel SST Audio for APL SoM DBGBoard");
+MODULE_DESCRIPTION("Intel SST Audio for HWTC CDC");
 MODULE_LICENSE("GPL v2");
 MODULE_ALIAS("platform:bxt_hwtc");
