@@ -505,7 +505,7 @@ static struct crlmodule_lite_platform_data ov495_ov10640_pdata = {
 #endif
 
 #if IS_ENABLED(CONFIG_VIDEO_TI960_ICI)
-#define TI960_I2C_ADAPTER	0 //ref 'ls -l /sys/bus/i2c/devices & 557555-apl-eds-vol1-rev2p4.pdf :: <2.1 PCI Device ID>'
+#define TI960_I2C_ADAPTER	5 //ref 'ls -l /sys/bus/i2c/devices & 557555-apl-eds-vol1-rev2p4.pdf :: <2.1 PCI Device ID>'
 #define TI960_I2C_ADAPTER_2	4
 #define	TI960_LANES	4
 
