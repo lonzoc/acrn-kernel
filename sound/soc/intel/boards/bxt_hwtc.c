@@ -28,6 +28,8 @@ static const struct snd_soc_dapm_widget broxton_hwtc_widgets[] = {
 	SND_SOC_DAPM_SPK("Speaker", NULL),
 	SND_SOC_DAPM_SPK("SpeakerSos", NULL),
 	SND_SOC_DAPM_MIC("MainMic", NULL),
+	SND_SOC_DAPM_HP("BtHfpUl", NULL),
+	SND_SOC_DAPM_MIC("BtHfpDl", NULL),
 };
 
 static const struct snd_soc_dapm_route broxton_hwtc_map[] = {
@@ -40,6 +42,12 @@ static const struct snd_soc_dapm_route broxton_hwtc_map[] = {
 
 	{ "codec0_in", NULL, "ssp2 Rx"},
 	{ "ssp2 Rx", NULL, "MainMic"},
+
+	{ "BtHfp_ssp5_in", NULL, "ssp5 Rx"},
+	{ "ssp5 Rx", NULL, "BtHfpDl"},
+
+	{ "BtHfpUl", NULL, "ssp5 Tx"},
+	{ "ssp5 Tx", NULL, "BtHfp_ssp5_out"},
 };
 
 static struct snd_soc_dai_link broxton_hwtc_dais[] = {
@@ -85,12 +93,40 @@ static struct snd_soc_dai_link broxton_hwtc_dais[] = {
 		.codec_dai_name = "snd-soc-dummy-dai",
 		.dpcm_capture = 1,
 	},
+	{
+		.name = "BtHfp Capture Port",
+		.stream_name = "BtHfp Cp",
+		.cpu_dai_name = "BtHfp Cp Pin",
+		.codec_name = "snd-soc-dummy",
+		.codec_dai_name = "snd-soc-dummy-dai",
+		.platform_name = "0000:00:0e.0",
+		.init = NULL,
+		.dpcm_capture = 1,
+		.ignore_suspend = 1,
+		.nonatomic = 1,
+		.dynamic = 1,
+	},
+	{
+		.name = "BtHfp Playback Port",
+		.stream_name = "BtHfp Pb",
+		.cpu_dai_name = "BtHfp Pb Pin",
+		.platform_name = "0000:00:0e.0",
+		.nonatomic = 1,
+		.dynamic = 1,
+		.codec_name = "snd-soc-dummy",
+		.codec_dai_name = "snd-soc-dummy-dai",
+		.trigger = {
+			SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST
+		},
+		.dpcm_playback = 1,
+	},
 
 	/* BE  DAI links */
 	{
 		/* SSP1 - ADAU1467 Playback */
 		.name = "SSP1-Codec",
-		.id = 1,
+		.id = 0,
 		.cpu_dai_name = "SSP1 Pin",
 		.codec_name = "snd-soc-dummy",
 		.codec_dai_name = "snd-soc-dummy-dai",
@@ -102,7 +138,7 @@ static struct snd_soc_dai_link broxton_hwtc_dais[] = {
 	{
 		/* SSP2 - ADAU1467 Capture */
 		.name = "SSP2-Codec",
-		.id = 2,
+		.id = 1,
 		.cpu_dai_name = "SSP2 Pin",
 		.codec_name = "snd-soc-dummy",
 		.codec_dai_name = "snd-soc-dummy-dai",
@@ -111,6 +147,19 @@ static struct snd_soc_dai_link broxton_hwtc_dais[] = {
 		.dpcm_capture = 1,
 		.no_pcm = 1,
 	},
+	{
+		/* SSP5 - BT */
+		.name = "SSP5-Codec",
+		.id = 2,
+		.cpu_dai_name = "SSP5 Pin",
+		.codec_name = "snd-soc-dummy",
+		.codec_dai_name = "snd-soc-dummy-dai",
+		.platform_name = "0000:00:0e.0",
+		.ignore_suspend = 1,
+		.dpcm_capture = 1,
+		.dpcm_playback = 1,
+		.no_pcm = 1,
+	}
 };
 
 static int bxt_add_dai_link(struct snd_soc_card *card,
