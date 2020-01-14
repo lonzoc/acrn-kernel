@@ -261,6 +261,13 @@ i915_param_named_unsafe(domain_plane_owners, ullong, 0400,
 i915_param_named(enable_conformance_check, bool, 0400,
 	"To toggle the GVT guest conformance feature(default:true)");
 
+/* DDI_A(PORT_A) = BITS 0-3, DDI_B(PORT_B) = 4-7, DDI_C(PORT_C) = 8-11
+ * Each nibble represents a DDI, and its value is a bit mask of the crtc
+ */
+i915_param_named_unsafe(ddi_crtc_mask, uint, 0400,
+	"crtc mask for each DDI encoder"
+);
+
 static __always_inline void _print_param(struct drm_printer *p,
 					 const char *name,
 					 const char *type,
