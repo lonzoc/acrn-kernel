@@ -348,10 +348,43 @@ void drm_bridge_enable(struct drm_bridge *bridge)
 }
 EXPORT_SYMBOL(drm_bridge_enable);
 
+/**
+ * fwnode_drm_find_bridge - find the bridge corresponding to the firmware
+ *    device node in the global bridge list
+ *
+ * @fwnode: firmware device node
+ *
+ * RETURNS:
+ * drm_bridge control struct on success, NULL on failure
+ */
+struct drm_bridge *fwnode_drm_find_bridge(struct fwnode_handle *fwnode)
+{
+	struct drm_bridge *bridge;
+
+	mutex_lock(&bridge_lock);
+
+	list_for_each_entry(bridge, &bridge_list, list) {
+		if (bridge->fwnode && bridge->fwnode ==  fwnode) {
+			mutex_unlock(&bridge_lock);
+			return bridge;
+		}
+
+#ifdef CONFIG_OF
+		if (bridge->of_node && &bridge->of_node->fwnode  == fwnode) {
+			mutex_unlock(&bridge_lock);
+			return bridge;
+		}
+#endif
+	}
+
+	mutex_unlock(&bridge_lock);
+	return NULL;
+}
+
 #ifdef CONFIG_OF
 /**
  * of_drm_find_bridge - find the bridge corresponding to the device node in
- *			the global bridge list
+ *                     the global bridge list
  *
  * @np: device node
  *
@@ -360,19 +393,7 @@ EXPORT_SYMBOL(drm_bridge_enable);
  */
 struct drm_bridge *of_drm_find_bridge(struct device_node *np)
 {
-	struct drm_bridge *bridge;
-
-	mutex_lock(&bridge_lock);
-
-	list_for_each_entry(bridge, &bridge_list, list) {
-		if (bridge->of_node == np) {
-			mutex_unlock(&bridge_lock);
-			return bridge;
-		}
-	}
-
-	mutex_unlock(&bridge_lock);
-	return NULL;
+       return np ? fwnode_drm_find_bridge(&np->fwnode) : NULL;
 }
 EXPORT_SYMBOL(of_drm_find_bridge);
 #endif

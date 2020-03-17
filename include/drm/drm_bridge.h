@@ -278,6 +278,7 @@ struct drm_bridge {
 	struct drm_encoder *encoder;
 	/** @next: the next bridge in the encoder chain */
 	struct drm_bridge *next;
+	struct fwnode_handle *fwnode;
 #ifdef CONFIG_OF
 	/** @of_node: device node pointer to the bridge */
 	struct device_node *of_node;
