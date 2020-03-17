@@ -129,6 +129,12 @@ config DRM_TI_TFP410
 	---help---
 	  Texas Instruments TFP410 DVI/HDMI Transmitter driver
 
+config DRM_HWTC_FPGA_VS
+	tristate "HWTC FPGA based video splitter bridge"
+	depends on SPI
+	help
+	  Say Y here if you want support for the video splitter developed by HWTC.
+
 source "drivers/gpu/drm/bridge/analogix/Kconfig"
 
 source "drivers/gpu/drm/bridge/adv7511/Kconfig"
