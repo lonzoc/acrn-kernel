@@ -9,6 +9,7 @@
 #include <linux/spi/spi.h>
 #include <linux/regmap.h>
 #include <linux/acpi.h>
+#include <linux/gpio/consumer.h>
 #include <drm/drm_crtc_helper.h>
 
 /*
@@ -20,9 +21,7 @@
  * video input (x, y, w, h)
  * +------------------------------------+
  * |                  |                 |
- * |                  |                 |
  * |     output0      |      output1    |
- * |                  |                 |
  * |                  |                 |
  * +------------------------------------+                
  * |                                    |
@@ -50,6 +49,11 @@
 #define VS_TPG_G               0x0402
 #define VS_TPG_B               0x0403
 
+/* interrupt status bits */
+#define SYSTEM_ERR            BIT(0)
+#define DRAM_ERR               BIT(1)
+#define VIDEO_STREAM_ERR       BIT(2)
+
 struct video_param {
 	u16 x;
 	u16 y;
@@ -62,12 +66,12 @@ struct fpga_vs {
 	struct device *dev;
 	struct regmap *regmap;
 	struct drm_bridge bridge;
+	struct gpio_desc *irq_gpio;
+	int irq;
 
 	struct video_param video_in;
 	struct video_param video_out[MAX_VIDEO_STREAM];
 };
-
-#define to_fpga_vs(x) container_of(x, struct fpga_vs, bridge)
 
 static const struct regmap_config regmap_conf = {
 	.reg_bits = 16,
@@ -77,6 +81,9 @@ static const struct regmap_config regmap_conf = {
 	.reg_format_endian = REGMAP_ENDIAN_BIG,
 	.val_format_endian = REGMAP_ENDIAN_BIG,
 };
+
+typedef int (*fpga_vs_handler_t)(struct fpga_vs *);
+#define to_fpga_vs(x) container_of(x, struct fpga_vs, bridge)
 
 static int fpga_vs_stream_ctrl(struct fpga_vs *vs, unsigned int stream_index,
 		bool enable)
@@ -198,6 +205,58 @@ static int fpga_vs_configure(struct fpga_vs *vs)
 	return ret;
 }
 
+static int fpga_vs_system_err_handler(struct fpga_vs *vs)
+{
+	// TODO: do a hard reset to recovery the FPGA
+	return 0;
+}
+
+static int fpga_vs_dram_err_handler(struct fpga_vs *vs)
+{
+	// TODO: report to userspace
+	return 0;
+}
+
+static int fpga_vs_stream_err_handler(struct fpga_vs *vs)
+{
+	// TODO: report to userspace
+	return 0;
+}
+
+/* keep the bit order same with VS_INT_STATUS register defination */
+static fpga_vs_handler_t fpga_vs_handlers[16] = {
+	[0] = fpga_vs_system_err_handler,
+	[1] = fpga_vs_dram_err_handler,
+	[2] = fpga_vs_stream_err_handler,
+};
+
+static irqreturn_t fpga_vs_irq_thread(int irq, void *data)
+{
+	struct fpga_vs *vs =  data;
+	struct regmap *rm = vs->regmap;
+	fpga_vs_handler_t handler;
+	unsigned int val;
+	int ret, i;
+
+	ret = regmap_read(rm, VS_INT_STATUS, &val);
+	if (ret < 0) {
+		goto out;
+	}
+
+	for (i = 0;  i < 16; i++) {
+		if (val & BIT(i)) {
+			handler = fpga_vs_handlers[i];
+			if (handler) {
+				ret = handler(vs);
+				// TODO: we should check ret
+			}
+		}
+	}
+
+out:
+	return IRQ_HANDLED;
+}
+
 static int fpga_vs_probe(struct spi_device *spi)
 {
 	struct fpga_vs *fpga_vs;
@@ -215,12 +274,30 @@ static int fpga_vs_probe(struct spi_device *spi)
 	if (IS_ERR(fpga_vs->regmap)) {
 		ret = PTR_ERR(fpga_vs->regmap);
 		dev_err(fpga_vs->dev, "Failed to initialize regmap: %d", ret);
-		goto err_regmap;
+		goto err;
+	}
+
+	fpga_vs->irq_gpio = devm_gpiod_get_index(fpga_vs->dev, "irq", 0, GPIOD_IN);
+	if (IS_ERR(fpga_vs->irq_gpio)) {
+		ret = PTR_ERR(fpga_vs->irq_gpio);
+		goto err;
+	}
+
+	ret = gpiod_to_irq(fpga_vs->irq_gpio);
+	if (ret < 0) {
+		goto err;
+	}
+	fpga_vs->irq = ret;
+
+	ret = devm_request_threaded_irq(fpga_vs->dev, fpga_vs->irq, NULL,
+			fpga_vs_irq_thread, IRQF_TRIGGER_LOW, NULL, fpga_vs);
+	if (ret < 0) {
+		goto err;
 	}
 
 	ret = fpga_vs_configure(fpga_vs);
 	if (ret < 0) {
-		goto err_conf;
+		goto err;
 	}
 
 	fpga_vs->bridge.funcs = &fpga_vs_bridge_funcs;
@@ -229,8 +306,6 @@ static int fpga_vs_probe(struct spi_device *spi)
 	dev_set_drvdata(fpga_vs->dev, fpga_vs);
 
 	return 0;
-err_regmap:
-err_conf:
 err:
 	return ret;	
 }
