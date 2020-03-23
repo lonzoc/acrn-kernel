@@ -46,9 +46,7 @@
 #define VS_STREAMOUT_MODE_BASE 0x0330
 /* Test pattern generator */
 #define VS_TPG_CTRL            0x0400
-#define VS_TPG_R               0x0401
-#define VS_TPG_G               0x0402
-#define VS_TPG_B               0x0403
+#define VS_TPG_COLOR           0x0401  /* RGB, R first, B last*/
 
 /* interrupt status bits */
 #define SYSTEM_ERR             BIT(0)
@@ -210,7 +208,7 @@ static ssize_t sys_status_show(struct device *dev,
 {
 	struct fpga_vs *vs = dev_get_drvdata(dev);
 
-	return snprintf(buf, PAGE_SIZE, "%x\n", vs->sys_status);
+	return scnprintf(buf, PAGE_SIZE, "%x\n", vs->sys_status);
 }
 DEVICE_ATTR_RO(sys_status);
 
@@ -219,7 +217,7 @@ static ssize_t dram_status_show(struct device *dev,
 {
 	struct fpga_vs *vs = dev_get_drvdata(dev);
 
-	return snprintf(buf, PAGE_SIZE, "%x\n", vs->dram_status);
+	return scnprintf(buf, PAGE_SIZE, "%x\n", vs->dram_status);
 }
 DEVICE_ATTR_RO(dram_status);
 
@@ -238,10 +236,107 @@ static ssize_t video_stream_status_show(struct device *dev,
 }
 DEVICE_ATTR_RO(video_stream_status);
 
+static ssize_t test_pattern_ctrl_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct fpga_vs *vs = dev_get_drvdata(dev);
+	struct regmap *rm = vs->regmap;
+	unsigned int val;
+	int ret, n;
+
+	ret = regmap_read(rm, VS_TPG_CTRL, &val);
+	if (ret < 0) {
+		return ret;
+	}
+
+	n = scnprintf(buf, PAGE_SIZE, "%x\n", (u16)val);
+	n += scnprintf(buf + n, PAGE_SIZE - n,
+			"bit0   | 0x1:enable test pattern, 0x0:disable test pattern\n");
+	n += scnprintf(buf + n, PAGE_SIZE - n,
+			"bit1~2 | 0x00:color bar, "
+			"0x01:color defined by test_pattern_color\n");
+
+	return n;
+}
+
+static ssize_t test_pattern_ctrl_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	struct fpga_vs *vs = dev_get_drvdata(dev);
+	struct regmap *rm = vs->regmap;
+	unsigned int ctrl;
+	int ret;
+
+	ret = kstrtou32(buf, 0, &ctrl);
+	if (ret < 0) {
+		return ret;
+	}
+
+	ret = regmap_write(rm, VS_TPG_CTRL, ctrl);
+	if (ret < 0) {
+		return ret;
+	}
+
+	return size;
+}
+DEVICE_ATTR_RW(test_pattern_ctrl);
+
+static ssize_t test_pattern_color_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct fpga_vs *vs = dev_get_drvdata(dev);
+	struct regmap *rm = vs->regmap;
+	u16 val[3];
+	u32 rgb888;
+	int ret, n;
+
+	ret = regmap_bulk_read(rm, VS_TPG_COLOR, val, ARRAY_SIZE(val));
+	if (ret < 0) {
+		return ret;
+	}
+
+	rgb888 = (val[0] & 0xff) << 16;
+	rgb888 |= (val[1] & 0xff) << 8;
+	rgb888 |= val[2] & 0xff;
+	n = scnprintf(buf, PAGE_SIZE, "0x%x\n", rgb888);
+	n += scnprintf(buf + n, PAGE_SIZE - n,
+			"RGB888 color setting, e.g. 0xAABBCC -> R=0xAA G=0xBB B=0xCC\n");
+
+	return n;
+}
+
+static ssize_t test_pattern_color_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	struct fpga_vs *vs = dev_get_drvdata(dev);
+	struct regmap *rm = vs->regmap;
+	u32 rgb888;
+	u16 rgb[3];
+	int ret;
+
+	ret = kstrtou32(buf, 0, &rgb888);
+	if (ret < 0) {
+		return ret;
+	}
+
+	rgb[0] = (rgb888 >> 16 ) & 0xff;
+	rgb[1] = (rgb888 >> 8 ) & 0xff;
+	rgb[2] = rgb888 & 0xff;
+	ret = regmap_bulk_write(rm, VS_TPG_COLOR, rgb, ARRAY_SIZE(rgb));
+	if (ret < 0) {
+		return ret;
+	}
+
+	return size;
+}
+DEVICE_ATTR_RW(test_pattern_color);
+
 static struct attribute *fpga_vs_attrs[] = {
 	&dev_attr_sys_status.attr,
 	&dev_attr_dram_status.attr,
 	&dev_attr_video_stream_status.attr,
+	&dev_attr_test_pattern_ctrl.attr,
+	&dev_attr_test_pattern_color.attr,
 	NULL
 };
 
