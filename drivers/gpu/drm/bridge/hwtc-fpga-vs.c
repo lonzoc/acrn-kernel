@@ -9,6 +9,7 @@
 #include <linux/spi/spi.h>
 #include <linux/regmap.h>
 #include <linux/acpi.h>
+#include <linux/sysfs.h>
 #include <linux/gpio/consumer.h>
 #include <drm/drm_crtc_helper.h>
 
@@ -50,7 +51,7 @@
 #define VS_TPG_B               0x0403
 
 /* interrupt status bits */
-#define SYSTEM_ERR            BIT(0)
+#define SYSTEM_ERR             BIT(0)
 #define DRAM_ERR               BIT(1)
 #define VIDEO_STREAM_ERR       BIT(2)
 
@@ -71,6 +72,11 @@ struct fpga_vs {
 
 	struct video_param video_in;
 	struct video_param video_out[MAX_VIDEO_STREAM];
+
+	/* status */
+	u16 sys_status;
+	u16 dram_status;
+	u16 video_stream_status[MAX_VIDEO_STREAM];
 };
 
 static const struct regmap_config regmap_conf = {
@@ -154,13 +160,6 @@ static void fpga_vs_mode_set(struct drm_bridge *bridge,
 	dev_info(vs->dev, "FPGA video splitter mode set\n");
 }
 
-static const struct drm_bridge_funcs fpga_vs_bridge_funcs = {
-	.attach = fpga_vs_attach,
-	.detach = fpga_vs_detach,
-	.mode_set = fpga_vs_mode_set,
-	.enable = fpga_vs_enable,
-	.disable = fpga_vs_disable,
-};
 
 static int fpga_vs_configure_video_stream(struct fpga_vs *vs)
 {
@@ -205,26 +204,92 @@ static int fpga_vs_configure(struct fpga_vs *vs)
 	return ret;
 }
 
+/* sysfs attributies */
+static ssize_t sys_status_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct fpga_vs *vs = dev_get_drvdata(dev);
+
+	return snprintf(buf, PAGE_SIZE, "%x\n", vs->sys_status);
+}
+DEVICE_ATTR_RO(sys_status);
+
+static ssize_t dram_status_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct fpga_vs *vs = dev_get_drvdata(dev);
+
+	return snprintf(buf, PAGE_SIZE, "%x\n", vs->dram_status);
+}
+DEVICE_ATTR_RO(dram_status);
+
+static ssize_t video_stream_status_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct fpga_vs *vs = dev_get_drvdata(dev);
+	int i, n;
+
+	for (i = 0, n = 0; i < MAX_VIDEO_STREAM; i++) {
+		n += scnprintf(buf + n, PAGE_SIZE - n, "%x,",
+				vs->video_stream_status[i]);
+	}
+
+	return n;
+}
+DEVICE_ATTR_RO(video_stream_status);
+
+static struct attribute *fpga_vs_attrs[] = {
+	&dev_attr_sys_status.attr,
+	&dev_attr_dram_status.attr,
+	&dev_attr_video_stream_status.attr,
+	NULL
+};
+
+static const struct attribute_group fpga_vs_attr_group = {
+	.attrs = fpga_vs_attrs,
+};
+
 static int fpga_vs_system_err_handler(struct fpga_vs *vs)
 {
+	vs->sys_status = 0xDEAD;
+
 	// TODO: do a hard reset to recovery the FPGA
 	return 0;
 }
 
 static int fpga_vs_dram_err_handler(struct fpga_vs *vs)
 {
-	// TODO: report to userspace
-	return 0;
+	struct regmap *rm = vs->regmap;
+	unsigned int val;
+	int ret;
+
+	ret = regmap_read(rm, VS_DRAM_STATUS, &val);
+	if (!ret) {
+		vs->dram_status = val;
+		kobject_uevent(&vs->dev->kobj, KOBJ_CHANGE);
+	}
+
+	return ret;
 }
 
 static int fpga_vs_stream_err_handler(struct fpga_vs *vs)
 {
-	// TODO: report to userspace
-	return 0;
+	struct regmap *rm = vs->regmap;
+	u16 val[MAX_VIDEO_STREAM];
+	int ret;
+
+	// TODO: read all stream status
+	ret = regmap_bulk_read(rm, VS_STREAM_STATUS_BASE, val, MAX_VIDEO_STREAM);
+	if (!ret) {
+		memcpy(vs->video_stream_status, val, sizeof(val));
+		kobject_uevent(&vs->dev->kobj, KOBJ_CHANGE);
+	}
+
+	return ret;
 }
 
 /* keep the bit order same with VS_INT_STATUS register defination */
-static fpga_vs_handler_t fpga_vs_handlers[16] = {
+static const fpga_vs_handler_t fpga_vs_handlers[] = {
 	[0] = fpga_vs_system_err_handler,
 	[1] = fpga_vs_dram_err_handler,
 	[2] = fpga_vs_stream_err_handler,
@@ -243,7 +308,7 @@ static irqreturn_t fpga_vs_irq_thread(int irq, void *data)
 		goto out;
 	}
 
-	for (i = 0;  i < 16; i++) {
+	for (i = 0;  i < ARRAY_SIZE(fpga_vs_handlers); i++) {
 		if (val & BIT(i)) {
 			handler = fpga_vs_handlers[i];
 			if (handler) {
@@ -256,6 +321,14 @@ static irqreturn_t fpga_vs_irq_thread(int irq, void *data)
 out:
 	return IRQ_HANDLED;
 }
+
+static const struct drm_bridge_funcs fpga_vs_bridge_funcs = {
+	.attach = fpga_vs_attach,
+	.detach = fpga_vs_detach,
+	.mode_set = fpga_vs_mode_set,
+	.enable = fpga_vs_enable,
+	.disable = fpga_vs_disable,
+};
 
 static int fpga_vs_probe(struct spi_device *spi)
 {
@@ -297,6 +370,12 @@ static int fpga_vs_probe(struct spi_device *spi)
 
 	ret = fpga_vs_configure(fpga_vs);
 	if (ret < 0) {
+		goto err;
+	}
+
+	ret = sysfs_create_group(&fpga_vs->dev->kobj, &fpga_vs_attr_group);
+	if (ret < 0) {
+		dev_err(fpga_vs->dev, "Failed to create sysfs files\n");
 		goto err;
 	}
 
