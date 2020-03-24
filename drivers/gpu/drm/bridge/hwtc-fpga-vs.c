@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * FPGA based video splitter drvier
- * 
+ *
  * Copyright (C) 2020 HWTC Co.,Ltd.
  */
 
 #include <linux/module.h>
 #include <linux/spi/spi.h>
 #include <linux/regmap.h>
+#include <linux/property.h>
 #include <linux/acpi.h>
 #include <linux/sysfs.h>
 #include <linux/gpio/consumer.h>
@@ -66,7 +67,6 @@ struct fpga_vs {
 	struct regmap *regmap;
 	struct drm_bridge bridge;
 	struct gpio_desc *irq_gpio;
-	int irq;
 
 	struct video_param video_in;
 	struct video_param video_out[MAX_VIDEO_STREAM];
@@ -417,6 +417,45 @@ out:
 	return IRQ_HANDLED;
 }
 
+static int fpga_vs_get_device_property(struct fpga_vs *vs)
+{
+	struct device *dev = vs->dev;
+	struct video_param *vp;
+	u16 val[5 * MAX_VIDEO_STREAM];
+	int ret, i;
+
+	ret = device_property_read_u16_array(dev, "video-in-param", val, 5);
+	if (ret < 0) {
+		dev_err(dev, "Failed to get 'video-in-param': %d\n", ret);
+		return ret;
+	}
+
+	vp = &vs->video_in;
+	vp->x = val[0];
+	vp->y = val[1];
+	vp->w = val[2];
+	vp->h = val[3];
+	vp->fps = val[4];
+
+	ret = device_property_read_u16_array(dev, "video-out-param", val,
+			5 * MAX_VIDEO_STREAM);
+	if (ret < 0) {
+		dev_err(dev, "Failed to get 'video-out-param': %d\n", ret);
+		return ret;
+	}
+
+	for (i = 0; i < MAX_VIDEO_STREAM; i++) {
+		vp = &vs->video_out[i];
+		vp->x = val[0 + i * 5];
+		vp->y = val[1 + i * 5];
+		vp->w = val[2 + i * 5];
+		vp->h = val[3 + i * 5];
+		vp->fps = val[4 + i * 5];
+	}
+
+	return 0;
+}
+
 static const struct drm_bridge_funcs fpga_vs_bridge_funcs = {
 	.attach = fpga_vs_attach,
 	.detach = fpga_vs_detach,
@@ -438,6 +477,12 @@ static int fpga_vs_probe(struct spi_device *spi)
 
 	fpga_vs->dev = &spi->dev;
 
+	ret = fpga_vs_get_device_property(fpga_vs);
+	if (ret < 0) {
+		dev_err(fpga_vs->dev, "Failed to get device properties: %d\n", ret);
+		goto err;
+	}
+
 	fpga_vs->regmap = devm_regmap_init_spi(spi, &regmap_conf);
 	if (IS_ERR(fpga_vs->regmap)) {
 		ret = PTR_ERR(fpga_vs->regmap);
@@ -455,9 +500,8 @@ static int fpga_vs_probe(struct spi_device *spi)
 	if (ret < 0) {
 		goto err;
 	}
-	fpga_vs->irq = ret;
 
-	ret = devm_request_threaded_irq(fpga_vs->dev, fpga_vs->irq, NULL,
+	ret = devm_request_threaded_irq(fpga_vs->dev, ret, NULL,
 			fpga_vs_irq_thread, IRQF_TRIGGER_LOW, NULL, fpga_vs);
 	if (ret < 0) {
 		goto err;
